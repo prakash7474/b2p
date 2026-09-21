@@ -251,6 +251,26 @@ def create_restock_request(data: dict = Body(...)):
     }
 
 
+@app.get("/restock-requests")
+def get_restock_requests(status: str = None, vendor_id: str = None):
+    # filter restock requests by status or vendor if provided
+    query = {}
+    if status:
+        query["status"] = status
+    if vendor_id:
+        query["vendor_id"] = vendor_id
+
+    requests = list(COLS["restock_requests"].find(query))
+
+    for req in requests:
+        req["_id"] = str(req["_id"])
+
+    return {
+        "count": len(requests),
+        "restock_requests": requests
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 
