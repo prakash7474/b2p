@@ -16,3 +16,8 @@ dist/
 .idea/
 
 *.log
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
