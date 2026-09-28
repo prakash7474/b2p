@@ -19,108 +19,129 @@ import "./App.css";
 
 const API = "http://localhost:5000";
 
-function getValue(obj, keys, fallback = "-") {
+const getValue = (obj, keys, fallback = "") => {
   for (const key of keys) {
-    if (obj?.[key] !== undefined && obj?.[key] !== null && obj?.[key] !== "") {
-      return obj[key];
-    }
+    if (obj?.[key] !== undefined && obj?.[key] !== null) return obj[key];
   }
   return fallback;
-}
+};
 
-function formatStatus(value) {
-  if (!value) return "Unknown";
-  return String(value)
+const formatStatus = (status) =>
+  String(status || "unknown")
     .replace(/_/g, " ")
-    .replace(/\b\w/g, c => c.toUpperCase());
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+
+const statusClass = (status) => {
+  const value = String(status || "").toLowerCase();
+
+  if (
+    ["active", "approved", "confirmed", "synchronized", "success", "completed"].includes(
+      value
+    )
+  )
+    return "status status-success";
+
+  if (["pending", "requested", "processing", "normal"].includes(value))
+    return "status status-warning";
+
+  if (["rejected", "cancelled", "failed", "inactive"].includes(value))
+    return "status status-danger";
+
+  return "status status-neutral";
+};
+
+async function request(url, options = {}) {
+  const response = await fetch(`${API}${url}`, {
+    headers: {
+      "Content-Type": "application/json"
+    },
+    ...options
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request failed: ${response.status}`);
+  }
+
+  return response.json();
 }
 
-function statusClass(value) {
-  const s = String(value || "").toLowerCase();
-
-  if (["active", "approved", "verified", "completed", "success"].includes(s)) {
-    return "status active";
-  }
-
-  if (["pending", "processing", "requested"].includes(s)) {
-    return "status pending";
-  }
-
-  if (["rejected", "cancelled", "failed", "inactive"].includes(s)) {
-    return "status danger";
-  }
-
-  return "status neutral";
-}
-
-function Sidebar({ page, setPage, open, setOpen }) {
+function Sidebar({ page, setPage, open, setOpen, demands }) {
   const items = [
-    { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-    { key: "vendors", label: "Vendors", icon: Store },
-    { key: "products", label: "Products", icon: Package },
-    { key: "inventory", label: "Inventory", icon: Warehouse },
-    { key: "restocking", label: "Restocking", icon: RefreshCw },
-    { key: "logs", label: "Activity Logs", icon: FileText }
+    {
+      title: "Overview",
+      links: [
+        ["dashboard", "Dashboard", LayoutDashboard]
+      ]
+    },
+    {
+      title: "Management",
+      links: [
+        ["vendors", "Vendors", Store],
+        ["products", "Products", Package],
+        ["inventory", "Inventory", Warehouse]
+      ]
+    },
+    {
+      title: "Operations",
+      links: [
+        ["demands", "Demands", FileText],
+        ["restocking", "Restocking", RefreshCw]
+      ]
+    },
+    {
+      title: "System",
+      links: [
+        ["activity", "Activity", FileText]
+      ]
+    }
   ];
 
   return (
     <>
-      <div
-        className={`mobile-overlay ${open ? "show" : ""}`}
-        onClick={() => setOpen(false)}
-      />
+      {open && <div className="mobile-overlay" onClick={() => setOpen(false)} />}
 
-      <aside className={`sidebar ${open ? "open" : ""}`}>
+      <aside className={`sidebar ${open ? "sidebar-open" : ""}`}>
         <div className="brand">
-          <div className="brand-mark">B2P</div>
-
-          <div>
-            <div className="brand-title">B2P</div>
-            <div className="brand-subtitle">Manufacturer Portal</div>
+          <div className="brand-logo">B2</div>
+          <div className="brand-text">
+            <h2>B2P</h2>
+            <span>Manufacturer Portal</span>
           </div>
 
-          <button
-            className="mobile-close"
-            onClick={() => setOpen(false)}
-          >
-            <X size={20} />
+          <button className="mobile-close" onClick={() => setOpen(false)}>
+            <X size={18} />
           </button>
         </div>
 
-        <div className="nav-label">MAIN MENU</div>
+        {items.map((section) => (
+          <div className="nav-section" key={section.title}>
+            <div className="nav-title">{section.title}</div>
 
-        <nav>
-          {items.map(item => {
-            const Icon = item.icon;
-
-            return (
+            {section.links.map(([id, label, Icon]) => (
               <button
-                key={item.key}
-                className={`nav-item ${page === item.key ? "selected" : ""}`}
+                key={id}
+                className={`nav-item ${page === id ? "active" : ""}`}
                 onClick={() => {
-                  setPage(item.key);
+                  setPage(id);
                   setOpen(false);
                 }}
               >
-                <Icon size={18} />
-                <span>{item.label}</span>
-
-                {page === item.key && (
-                  <ChevronRight size={16} className="nav-arrow" />
+                <Icon size={17} />
+                <span>{label}</span>
+                {id === "demands" && demands.length > 0 && (
+                  <span className="nav-badge">NEW</span>
                 )}
               </button>
-            );
-          })}
-        </nav>
-
-        <div className="sidebar-bottom">
-          <div className="connection">
-            <span className="connection-dot" />
-            Backend Connected
+            ))}
           </div>
+        ))}
 
-          <div className="backend-url">
-            localhost:5000
+        <div className="backend-status">
+          <div className="backend-dot" />
+          <div>
+            <strong>Backend Connected</strong>
+            <span>localhost:5000</span>
           </div>
         </div>
       </aside>
@@ -128,1637 +149,1066 @@ function Sidebar({ page, setPage, open, setOpen }) {
   );
 }
 
-function PageHeader({
-  title,
-  subtitle,
-  onRefresh,
-  refreshing
-}) {
+function Topbar({ title, setOpen }) {
   return (
-    <div className="page-header">
-      <div>
-        <h1>{title}</h1>
-        <p>{subtitle}</p>
-      </div>
+    <header className="topbar">
+      <div className="topbar-left">
+        <button className="menu-btn" onClick={() => setOpen(true)}>
+          <Menu size={20} />
+        </button>
 
-      <button
-        className="refresh-btn"
-        onClick={onRefresh}
-        disabled={refreshing}
-      >
-        <RefreshCw
-          size={17}
-          className={refreshing ? "spin" : ""}
-        />
-        Refresh
-      </button>
-    </div>
-  );
-}
-
-function StatCard({
-  title,
-  value,
-  icon: Icon,
-  note,
-  danger
-}) {
-  return (
-    <div className={`stat-card ${danger ? "danger-card" : ""}`}>
-      <div className="stat-top">
-        <div className="stat-title">{title}</div>
-
-        <div className="stat-icon">
-          <Icon size={19} />
+        <div>
+          <div className="topbar-brand">B2POnline</div>
+          <div className="topbar-subtitle">MANUFACTURER PORTAL</div>
         </div>
       </div>
 
-      <div className="stat-value">{value}</div>
-
-      {note && (
-        <div className="stat-note">
-          {note}
-        </div>
-      )}
-    </div>
+      <div className="topbar-right">
+        <span className="online-dot" />
+        <span>System Online</span>
+        <strong>{title}</strong>
+      </div>
+    </header>
   );
 }
 
-function SearchBox({
-  value,
-  onChange,
-  placeholder = "Search..."
-}) {
+function StatCard({ icon: Icon, title, value, text }) {
   return (
-    <div className="search-box">
-      <Search size={17} />
+    <div className="dashboard-stat">
+      <div className="dashboard-stat-icon">
+        <Icon size={19} />
+      </div>
 
-      <input
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
-      />
-    </div>
-  );
-}
+      <div className="dashboard-stat-label">{title}</div>
 
-function EmptyState({ message }) {
-  return (
-    <div className="empty-state">
-      {message}
-    </div>
-  );
-}
-
-function ErrorBox({ message }) {
-  if (!message) return null;
-
-  return (
-    <div className="error-box">
-      {message}
+      <div className="dashboard-stat-value">
+        <strong>{value}</strong>
+        <span>{text}</span>
+      </div>
     </div>
   );
 }
 
 function Dashboard({
-  data,
-  loading,
-  error,
-  refresh,
-  setPage
+  vendors,
+  products,
+  inventory,
+  demands,
+  restocks,
+  logs,
+  setPage,
+  refresh
 }) {
-  const {
-    vendors,
-    products,
-    inventory,
-    restocks,
-    logs
-  } = data;
-
-  const pendingVendors = vendors.filter(v => {
-    const status = String(
-      getValue(v, ["status", "verificationStatus"], "")
-    ).toLowerCase();
-
-    return status === "pending";
-  }).length;
-
-  const lowStock = inventory.filter(item => {
-    const qty = Number(
-      getValue(
-        item,
-        [
-          "quantity",
-          "current_stock",
-          "stock",
-          "quantity_kg"
-        ],
-        NaN
-      )
-    );
-
-    return Number.isFinite(qty) && qty <= 20;
-  }).length;
-
-  const pendingRestocks = restocks.filter(r =>
-    String(
-      getValue(r, ["status"], "")
-    ).toLowerCase() === "pending"
+  const pendingVendors = vendors.filter(
+    (v) => String(getValue(v, ["status"])).toLowerCase() === "pending"
   ).length;
 
+  const lowStock = inventory.filter((item) => {
+    const quantity = Number(getValue(item, ["quantity", "stock", "available_quantity"], 0));
+    const threshold = Number(
+      getValue(item, ["reorder_level", "minimum_stock", "threshold"], 10)
+    );
+    return quantity <= threshold;
+  }).length;
+
+  const pendingDemands = demands.filter((d) => {
+    const status = String(getValue(d, ["status"])).toLowerCase();
+    return !["synchronized", "completed", "cancelled"].includes(status);
+  }).length;
+
   return (
-    <>
-      <PageHeader
-        title="Dashboard"
-        subtitle="Overview of your manufacturer operations"
-        onRefresh={refresh}
-        refreshing={loading}
-      />
+    <div>
+      <div className="dashboard-header">
+        <div>
+          <h1>Dashboard</h1>
+          <p>A compact view of your manufacturing operations</p>
+        </div>
 
-      <ErrorBox message={error} />
+        <button className="refresh-btn" onClick={refresh}>
+          <RefreshCw size={15} />
+          Refresh
+        </button>
+      </div>
 
-      <div className="stats-grid">
+      <div className="dashboard-stats">
         <StatCard
-          title="Total Vendors"
-          value={vendors.length}
           icon={Store}
-          note={`${pendingVendors} pending approval`}
+          title="Vendors"
+          value={vendors.length}
+          text={`${pendingVendors} pending`}
         />
 
         <StatCard
-          title="Total Products"
-          value={products.length}
           icon={Package}
-          note="From vendor product catalog"
+          title="Products"
+          value={products.length}
+          text="Catalog items"
         />
 
         <StatCard
-          title="Inventory Records"
-          value={inventory.length}
           icon={Warehouse}
-          note={`${lowStock} low-stock records`}
-          danger={lowStock > 0}
+          title="Inventory"
+          value={inventory.length}
+          text={`${lowStock} low stock`}
         />
 
         <StatCard
-          title="Pending Restocks"
-          value={pendingRestocks}
-          icon={RefreshCw}
-          note={`${restocks.length} total requests`}
+          icon={FileText}
+          title="Pending Demands"
+          value={pendingDemands}
+          text={`${demands.length} total requests`}
         />
       </div>
 
-      <div className="dashboard-grid">
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h2>Recent Activity</h2>
-              <p>Latest records from the backend logs</p>
+      <div className="dashboard-main-grid">
+        <section className="dashboard-section">
+          <h2>Demand Queue</h2>
+          <p>Latest vendor demand requests</p>
+
+          <div className="dashboard-card">
+            {demands.length === 0 ? (
+              <div className="demand-empty">
+                <FileText size={25} />
+                <p>No demand requests found.</p>
+
+                <button
+                  className="open-demand-btn"
+                  onClick={() => setPage("demands")}
+                >
+                  Open demand center <ChevronRight size={13} />
+                </button>
+              </div>
+            ) : (
+              <div className="queue-list">
+                {demands.slice(0, 5).map((demand, index) => {
+                  const vendor = getValue(
+                    demand,
+                    ["vendor_id", "vendorId", "vendor"],
+                    "Unknown"
+                  );
+
+                  const status = getValue(demand, ["status"], "pending");
+
+                  return (
+                    <div className="queue-item" key={demand._id || demand.id || index}>
+                      <div className="queue-main">
+                        <div className="queue-title">
+                          Vendor {vendor}
+                        </div>
+                        <div className="queue-subtitle">
+                          {getValue(demand, ["priority"], "normal")} priority
+                        </div>
+                      </div>
+
+                      <div className="queue-right">
+                        <span className={statusClass(status)}>
+                          {formatStatus(status)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="dashboard-section">
+          <h2>System Snapshot</h2>
+          <p>Current module counts</p>
+
+          <div className="dashboard-card">
+            <div className="snapshot-row">
+              <div className="snapshot-left">
+                <Store />
+                Vendors
+              </div>
+              <span className="snapshot-count">{vendors.length}</span>
             </div>
 
-            <button
-              className="text-btn"
-              onClick={() => setPage("logs")}
-            >
-              View all
-            </button>
-          </div>
+            <div className="snapshot-row">
+              <div className="snapshot-left">
+                <Package />
+                Products
+              </div>
+              <span className="snapshot-count">{products.length}</span>
+            </div>
 
+            <div className="snapshot-row">
+              <div className="snapshot-left">
+                <Warehouse />
+                Inventory
+              </div>
+              <span className="snapshot-count">{inventory.length}</span>
+            </div>
+
+            <div className="snapshot-row">
+              <div className="snapshot-left">
+                <RefreshCw />
+                Restocking
+              </div>
+              <span className="snapshot-count">{restocks.length}</span>
+            </div>
+
+            <div className="snapshot-row">
+              <div className="snapshot-left">
+                <FileText />
+                Activity
+              </div>
+              <span className="snapshot-count">{logs.length}</span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section className="dashboard-section activity-section">
+        <h2>Recent Activity</h2>
+        <p>Latest events recorded by the backend</p>
+
+        <div className="activity-card">
           {logs.length === 0 ? (
-            <EmptyState message="No activity logs found." />
+            <div className="empty-state">No activity found.</div>
           ) : (
             <div className="activity-list">
               {logs.slice(0, 6).map((log, index) => (
-                <div
-                  className="activity-row"
-                  key={log._id || index}
-                >
+                <div className="activity-item" key={log._id || log.id || index}>
                   <div className="activity-icon">
-                    <FileText size={16} />
+                    <FileText size={14} />
                   </div>
 
-                  <div className="activity-content">
-                    <strong>
-                      {formatStatus(
-                        getValue(
-                          log,
-                          ["action", "type"],
-                          "Activity"
-                        )
-                      )}
-                    </strong>
-
-                    <span>
+                  <div>
+                    <div className="activity-text">
                       {getValue(
                         log,
-                        ["message"],
+                        ["message", "action", "event", "description"],
                         "System activity recorded"
                       )}
-                    </span>
+                    </div>
+                    <div className="activity-time">
+                      {getValue(log, ["created_at", "timestamp", "time"], "")}
+                    </div>
                   </div>
-
-                  <span className="activity-id">
-                    {getValue(
-                      log,
-                      ["vendor_id", "request_id"],
-                      ""
-                    )}
-                  </span>
                 </div>
               ))}
             </div>
           )}
-        </section>
-
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h2>System Overview</h2>
-              <p>Available backend modules</p>
-            </div>
-          </div>
-
-          <div className="module-list">
-            <button onClick={() => setPage("vendors")}>
-              <span>
-                <Store size={18} />
-                Vendors
-              </span>
-
-              <strong>{vendors.length}</strong>
-            </button>
-
-            <button onClick={() => setPage("products")}>
-              <span>
-                <Package size={18} />
-                Products
-              </span>
-
-              <strong>{products.length}</strong>
-            </button>
-
-            <button onClick={() => setPage("inventory")}>
-              <span>
-                <Warehouse size={18} />
-                Inventory
-              </span>
-
-              <strong>{inventory.length}</strong>
-            </button>
-
-            <button onClick={() => setPage("restocking")}>
-              <span>
-                <RefreshCw size={18} />
-                Restocking
-              </span>
-
-              <strong>{restocks.length}</strong>
-            </button>
-
-            <button onClick={() => setPage("logs")}>
-              <span>
-                <FileText size={18} />
-                Activity Logs
-              </span>
-
-              <strong>{logs.length}</strong>
-            </button>
-          </div>
-        </section>
-      </div>
-    </>
-  );
-}
-
-function Vendors({
-  vendors,
-  loading,
-  error,
-  refresh
-}) {
-  const [search, setSearch] = useState("");
-
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-
-    return vendors.filter(v =>
-      [
-        getValue(v, ["shop_name", "vendor_name", "name"], ""),
-        getValue(v, ["owner_name", "owner"], ""),
-        getValue(
-          v,
-          ["phone", "contact", "contact_number"],
-          ""
-        ),
-        getValue(v, ["vendor_id", "user_id"], ""),
-        getValue(
-          v,
-          ["status", "verificationStatus"],
-          ""
-        )
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(q)
-    );
-  }, [vendors, search]);
-
-  return (
-    <>
-      <PageHeader
-        title="Vendors"
-        subtitle="Manage registered partner shops"
-        onRefresh={refresh}
-        refreshing={loading}
-      />
-
-      <ErrorBox message={error} />
-
-      <div className="stats-grid compact">
-        <StatCard
-          title="Total Vendors"
-          value={vendors.length}
-          icon={Store}
-        />
-
-        <StatCard
-          title="Pending"
-          value={
-            vendors.filter(v =>
-              String(
-                getValue(
-                  v,
-                  ["status", "verificationStatus"],
-                  ""
-                )
-              ).toLowerCase() === "pending"
-            ).length
-          }
-          icon={Clock3}
-        />
-
-        <StatCard
-          title="Approved / Active"
-          value={
-            vendors.filter(v =>
-              [
-                "approved",
-                "active",
-                "verified"
-              ].includes(
-                String(
-                  getValue(
-                    v,
-                    ["status", "verificationStatus"],
-                    ""
-                  )
-                ).toLowerCase()
-              )
-            ).length
-          }
-          icon={CheckCircle2}
-        />
-      </div>
-
-      <section className="panel">
-        <div className="toolbar">
-          <SearchBox
-            value={search}
-            onChange={setSearch}
-            placeholder="Search vendors..."
-          />
-
-          <span className="result-count">
-            {filtered.length} vendors
-          </span>
         </div>
-
-        {filtered.length === 0 ? (
-          <EmptyState message="No vendors found." />
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Vendor</th>
-                  <th>Owner</th>
-                  <th>Contact</th>
-                  <th>Status</th>
-                  <th>Vendor ID</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {filtered.map((vendor, index) => {
-                  const status = getValue(
-                    vendor,
-                    ["status", "verificationStatus"],
-                    "Unknown"
-                  );
-
-                  return (
-                    <tr
-                      key={
-                        vendor._id ||
-                        vendor.vendor_id ||
-                        index
-                      }
-                    >
-                      <td>
-                        <div className="primary-cell">
-                          {getValue(
-                            vendor,
-                            [
-                              "shop_name",
-                              "vendor_name",
-                              "name"
-                            ]
-                          )}
-                        </div>
-                      </td>
-
-                      <td>
-                        {getValue(
-                          vendor,
-                          ["owner_name", "owner"]
-                        )}
-                      </td>
-
-                      <td>
-                        {getValue(
-                          vendor,
-                          [
-                            "phone",
-                            "contact",
-                            "contact_number"
-                          ]
-                        )}
-                      </td>
-
-                      <td>
-                        <span className={statusClass(status)}>
-                          {formatStatus(status)}
-                        </span>
-                      </td>
-
-                      <td className="mono">
-                        {getValue(
-                          vendor,
-                          ["vendor_id", "user_id"]
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
       </section>
-    </>
+    </div>
   );
 }
 
-function Products({
-  products,
-  loading,
-  error,
-  refresh
-}) {
-  const [search, setSearch] = useState("");
-
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-
-    return products.filter(p =>
-      [
-        getValue(
-          p,
-          ["product_name", "name", "product"],
-          ""
-        ),
-        getValue(p, ["category"], ""),
-        getValue(
-          p,
-          ["unit_type", "unit"],
-          ""
-        ),
-        getValue(p, ["product_id"], "")
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(q)
-    );
-  }, [products, search]);
-
-  const batterCount = products.filter(p =>
-    String(
-      getValue(p, ["category"], "")
-    )
-      .toLowerCase()
-      .includes("batter")
-  ).length;
+function Vendors({ vendors, search, setSearch }) {
+  const filtered = vendors.filter((vendor) =>
+    JSON.stringify(vendor).toLowerCase().includes(search.toLowerCase())
+  );
 
   return (
-    <>
-      <PageHeader
-        title="Products"
-        subtitle="Product catalog available through vendor inventory"
-        onRefresh={refresh}
-        refreshing={loading}
-      />
+    <PageLayout
+      title="Vendors"
+      subtitle="Manage registered vendors"
+      search={search}
+      setSearch={setSearch}
+    >
+      <div className="table-card">
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Vendor ID</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Phone</th>
+                <th>Status</th>
+              </tr>
+            </thead>
 
-      <ErrorBox message={error} />
+            <tbody>
+              {filtered.map((vendor, index) => {
+                const status = getValue(vendor, ["status"], "active");
 
-      <div className="stats-grid compact">
-        <StatCard
-          title="Total Products"
-          value={products.length}
-          icon={Package}
-        />
-
-        <StatCard
-          title="Batter Products"
-          value={batterCount}
-          icon={Package}
-        />
-
-        <StatCard
-          title="Other Products"
-          value={Math.max(
-            products.length - batterCount,
-            0
-          )}
-          icon={Package}
-        />
-      </div>
-
-      <section className="panel">
-        <div className="toolbar">
-          <SearchBox
-            value={search}
-            onChange={setSearch}
-            placeholder="Search products..."
-          />
-
-          <span className="result-count">
-            {filtered.length} products
-          </span>
-        </div>
-
-        {filtered.length === 0 ? (
-          <EmptyState message="No products found." />
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Product</th>
-                  <th>Category</th>
-                  <th>Unit</th>
-                  <th>Ambient Shelf Life</th>
-                  <th>Fridge Shelf Life</th>
-                  <th>Product ID</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {filtered.map((product, index) => (
-                  <tr
-                    key={
-                      product._id ||
-                      product.product_id ||
-                      index
-                    }
-                  >
+                return (
+                  <tr key={vendor._id || vendor.id || index}>
                     <td>
-                      <div className="primary-cell">
-                        {getValue(
-                          product,
-                          [
-                            "product_name",
-                            "name",
-                            "product"
-                          ]
-                        )}
-                      </div>
-                    </td>
-
-                    <td>
-                      {formatStatus(
-                        getValue(
-                          product,
-                          ["category"]
-                        )
+                      {getValue(
+                        vendor,
+                        ["vendor_id", "vendorId", "id", "_id"],
+                        "-"
                       )}
                     </td>
-
                     <td>
-                      {getValue(
-                        product,
-                        ["unit_type", "unit"]
-                      )}
+                      {getValue(vendor, ["name", "vendor_name", "business_name"], "-")}
                     </td>
-
+                    <td>{getValue(vendor, ["email"], "-")}</td>
+                    <td>{getValue(vendor, ["phone", "mobile"], "-")}</td>
                     <td>
-                      {getValue(
-                        product,
-                        [
-                          "shelf_life_ambient_hrs",
-                          "ambient_shelf_life_hrs"
-                        ]
-                      )}{" "}
-                      hrs
-                    </td>
-
-                    <td>
-                      {getValue(
-                        product,
-                        [
-                          "shelf_life_fridge_hrs",
-                          "fridge_shelf_life_hrs"
-                        ]
-                      )}{" "}
-                      hrs
-                    </td>
-
-                    <td className="mono">
-                      {getValue(
-                        product,
-                        ["product_id"]
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-    </>
-  );
-}
-
-function Inventory({
-  inventory,
-  loading,
-  error,
-  refresh
-}) {
-  const [search, setSearch] = useState("");
-
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-
-    return inventory.filter(item =>
-      [
-        getValue(
-          item,
-          [
-            "product_name",
-            "product",
-            "product_id"
-          ],
-          ""
-        ),
-        getValue(
-          item,
-          ["vendor_id", "vendor"],
-          ""
-        ),
-        getValue(
-          item,
-          ["unit_type", "unit"],
-          ""
-        ),
-        getValue(
-          item,
-          [
-            "quantity",
-            "current_stock",
-            "stock",
-            "quantity_kg"
-          ],
-          ""
-        )
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(q)
-    );
-  }, [inventory, search]);
-
-  const getQuantity = item =>
-    Number(
-      getValue(
-        item,
-        [
-          "quantity",
-          "current_stock",
-          "stock",
-          "quantity_kg"
-        ],
-        NaN
-      )
-    );
-
-  const lowStock = inventory.filter(item => {
-    const qty = getQuantity(item);
-
-    return (
-      Number.isFinite(qty) &&
-      qty <= 20
-    );
-  }).length;
-
-  return (
-    <>
-      <PageHeader
-        title="Inventory"
-        subtitle="Monitor inventory records across vendors"
-        onRefresh={refresh}
-        refreshing={loading}
-      />
-
-      <ErrorBox message={error} />
-
-      <div className="stats-grid compact">
-        <StatCard
-          title="Inventory Records"
-          value={inventory.length}
-          icon={Warehouse}
-        />
-
-        <StatCard
-          title="Low Stock"
-          value={lowStock}
-          icon={AlertTriangle}
-          danger={lowStock > 0}
-        />
-
-        <StatCard
-          title="Healthy Stock"
-          value={Math.max(
-            inventory.length - lowStock,
-            0
-          )}
-          icon={CheckCircle2}
-        />
-      </div>
-
-      <section className="panel">
-        <div className="toolbar">
-          <SearchBox
-            value={search}
-            onChange={setSearch}
-            placeholder="Search inventory..."
-          />
-
-          <span className="result-count">
-            {filtered.length} records
-          </span>
-        </div>
-
-        {filtered.length === 0 ? (
-          <EmptyState message="No inventory records found." />
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Product</th>
-                  <th>Vendor</th>
-                  <th>Quantity</th>
-                  <th>Unit</th>
-                  <th>Stock Status</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {filtered.map((item, index) => {
-                  const qty = getQuantity(item);
-
-                  const low =
-                    Number.isFinite(qty) &&
-                    qty <= 20;
-
-                  return (
-                    <tr
-                      key={
-                        item._id ||
-                        index
-                      }
-                    >
-                      <td>
-                        <div className="primary-cell">
-                          {getValue(
-                            item,
-                            [
-                              "product_name",
-                              "product",
-                              "product_id"
-                            ]
-                          )}
-                        </div>
-                      </td>
-
-                      <td className="mono">
-                        {getValue(
-                          item,
-                          [
-                            "vendor_id",
-                            "vendor"
-                          ]
-                        )}
-                      </td>
-
-                      <td>
-                        {Number.isFinite(qty)
-                          ? qty
-                          : getValue(
-                              item,
-                              [
-                                "quantity",
-                                "current_stock",
-                                "stock",
-                                "quantity_kg"
-                              ]
-                            )}
-                      </td>
-
-                      <td>
-                        {getValue(
-                          item,
-                          [
-                            "unit_type",
-                            "unit"
-                          ],
-                          "kg"
-                        )}
-                      </td>
-
-                      <td>
-                        <span
-                          className={
-                            low
-                              ? "status danger"
-                              : "status active"
-                          }
-                        >
-                          {low
-                            ? "Low Stock"
-                            : "Healthy"}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-    </>
-  );
-}
-
-function Restocking({
-  restocks,
-  loading,
-  error,
-  refresh
-}) {
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState("all");
-
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-
-    return restocks.filter(r => {
-      const rStatus = String(
-        getValue(r, ["status"], "")
-      ).toLowerCase();
-
-      const matchesStatus =
-        status === "all" ||
-        rStatus === status;
-
-      const matchesSearch = [
-        getValue(r, ["vendor_id"], ""),
-        getValue(r, ["status"], ""),
-        getValue(r, ["_id"], ""),
-        JSON.stringify(r.items || "")
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(q);
-
-      return (
-        matchesStatus &&
-        matchesSearch
-      );
-    });
-  }, [restocks, search, status]);
-
-  const pending = restocks.filter(r =>
-    String(
-      getValue(r, ["status"], "")
-    ).toLowerCase() === "pending"
-  ).length;
-
-  const completed = restocks.filter(r =>
-    ["completed", "approved"].includes(
-      String(
-        getValue(r, ["status"], "")
-      ).toLowerCase()
-    )
-  ).length;
-
-  const rejected = restocks.filter(r =>
-    ["rejected", "cancelled"].includes(
-      String(
-        getValue(r, ["status"], "")
-      ).toLowerCase()
-    )
-  ).length;
-
-  return (
-    <>
-      <PageHeader
-        title="Restocking"
-        subtitle="Track restock requests created by vendors"
-        onRefresh={refresh}
-        refreshing={loading}
-      />
-
-      <ErrorBox message={error} />
-
-      <div className="stats-grid compact">
-        <StatCard
-          title="Total Requests"
-          value={restocks.length}
-          icon={RefreshCw}
-        />
-
-        <StatCard
-          title="Pending"
-          value={pending}
-          icon={Clock3}
-        />
-
-        <StatCard
-          title="Completed / Approved"
-          value={completed}
-          icon={CheckCircle2}
-        />
-
-        <StatCard
-          title="Rejected / Cancelled"
-          value={rejected}
-          icon={XCircle}
-          danger={rejected > 0}
-        />
-      </div>
-
-      <section className="panel">
-        <div className="toolbar toolbar-wrap">
-          <SearchBox
-            value={search}
-            onChange={setSearch}
-            placeholder="Search requests..."
-          />
-
-          <div className="filter-buttons">
-            {[
-              "all",
-              "pending",
-              "approved",
-              "completed",
-              "rejected",
-              "cancelled"
-            ].map(value => (
-              <button
-                key={value}
-                className={
-                  status === value
-                    ? "filter-btn selected"
-                    : "filter-btn"
-                }
-                onClick={() =>
-                  setStatus(value)
-                }
-              >
-                {formatStatus(value)}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {filtered.length === 0 ? (
-          <EmptyState message="No restock requests found." />
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Request ID</th>
-                  <th>Vendor ID</th>
-                  <th>Items</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {filtered.map((request, index) => {
-                  const requestStatus =
-                    getValue(
-                      request,
-                      ["status"],
-                      "Unknown"
-                    );
-
-                  const items =
-                    Array.isArray(request.items)
-                      ? request.items.length
-                      : request.items
-                        ? 1
-                        : 0;
-
-                  return (
-                    <tr
-                      key={
-                        request._id ||
-                        index
-                      }
-                    >
-                      <td className="mono">
-                        {getValue(
-                          request,
-                          ["_id"]
-                        )}
-                      </td>
-
-                      <td className="mono">
-                        {getValue(
-                          request,
-                          ["vendor_id"]
-                        )}
-                      </td>
-
-                      <td>
-                        {items} item
-                        {items === 1
-                          ? ""
-                          : "s"}
-                      </td>
-
-                      <td>
-                        <span
-                          className={statusClass(
-                            requestStatus
-                          )}
-                        >
-                          {formatStatus(
-                            requestStatus
-                          )}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-    </>
-  );
-}
-
-function Logs({
-  logs,
-  loading,
-  error,
-  refresh
-}) {
-  const [search, setSearch] = useState("");
-
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase();
-
-    return logs.filter(log =>
-      [
-        getValue(
-          log,
-          ["action", "type"],
-          ""
-        ),
-        getValue(
-          log,
-          ["message"],
-          ""
-        ),
-        getValue(
-          log,
-          ["vendor_id"],
-          ""
-        ),
-        getValue(
-          log,
-          ["request_id"],
-          ""
-        )
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(q)
-    );
-  }, [logs, search]);
-
-  return (
-    <>
-      <PageHeader
-        title="Activity Logs"
-        subtitle="System activity and audit records"
-        onRefresh={refresh}
-        refreshing={loading}
-      />
-
-      <ErrorBox message={error} />
-
-      <section className="panel">
-        <div className="toolbar">
-          <SearchBox
-            value={search}
-            onChange={setSearch}
-            placeholder="Search activity..."
-          />
-
-          <span className="result-count">
-            {filtered.length} logs
-          </span>
-        </div>
-
-        {filtered.length === 0 ? (
-          <EmptyState message="No activity logs found." />
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Action</th>
-                  <th>Message</th>
-                  <th>Vendor ID</th>
-                  <th>Request ID</th>
-                  <th>Log ID</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {filtered.map((log, index) => (
-                  <tr
-                    key={
-                      log._id ||
-                      index
-                    }
-                  >
-                    <td>
-                      <span className="log-action">
-                        {formatStatus(
-                          getValue(
-                            log,
-                            ["action", "type"],
-                            "Activity"
-                          )
-                        )}
+                      <span className={statusClass(status)}>
+                        {formatStatus(status)}
                       </span>
                     </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
 
+          {filtered.length === 0 && (
+            <div className="empty-state">No vendors found.</div>
+          )}
+        </div>
+      </div>
+    </PageLayout>
+  );
+}
+
+function Products({ products, search, setSearch }) {
+  const filtered = products.filter((product) =>
+    JSON.stringify(product).toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <PageLayout
+      title="Products"
+      subtitle="Product catalog and details"
+      search={search}
+      setSearch={setSearch}
+    >
+      <div className="table-card">
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Product ID</th>
+                <th>Product</th>
+                <th>Category</th>
+                <th>Price</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {filtered.map((product, index) => {
+                const status = getValue(product, ["status"], "active");
+
+                return (
+                  <tr key={product._id || product.id || index}>
                     <td>
                       {getValue(
-                        log,
-                        ["message"],
+                        product,
+                        ["product_id", "productId", "id", "_id"],
                         "-"
                       )}
                     </td>
-
-                    <td className="mono">
-                      {getValue(
-                        log,
-                        ["vendor_id"],
-                        "-"
-                      )}
+                    <td>
+                      {getValue(product, ["name", "product_name", "title"], "-")}
                     </td>
-
-                    <td className="mono">
-                      {getValue(
-                        log,
-                        ["request_id"],
-                        "-"
-                      )}
-                    </td>
-
-                    <td className="mono">
-                      {getValue(
-                        log,
-                        ["_id"],
-                        "-"
-                      )}
+                    <td>{getValue(product, ["category", "type"], "-")}</td>
+                    <td>₹{getValue(product, ["price", "unit_price"], "-")}</td>
+                    <td>
+                      <span className={statusClass(status)}>
+                        {formatStatus(status)}
+                      </span>
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {filtered.length === 0 && (
+            <div className="empty-state">No products found.</div>
+          )}
+        </div>
+      </div>
+    </PageLayout>
+  );
+}
+
+function Inventory({ inventory, search, setSearch }) {
+  const filtered = inventory.filter((item) =>
+    JSON.stringify(item).toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <PageLayout
+      title="Inventory"
+      subtitle="Monitor current stock levels"
+      search={search}
+      setSearch={setSearch}
+    >
+      <div className="table-card">
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Vendor</th>
+                <th>Product</th>
+                <th>Quantity</th>
+                <th>Reorder Level</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {filtered.map((item, index) => {
+                const quantity = Number(
+                  getValue(item, ["quantity", "stock", "available_quantity"], 0)
+                );
+
+                const reorder = Number(
+                  getValue(item, ["reorder_level", "minimum_stock", "threshold"], 10)
+                );
+
+                const low = quantity <= reorder;
+
+                return (
+                  <tr key={item._id || item.id || index}>
+                    <td>
+                      {getValue(
+                        item,
+                        ["vendor_id", "vendorId", "vendor"],
+                        "-"
+                      )}
+                    </td>
+                    <td>
+                      {getValue(
+                        item,
+                        ["product_id", "productId", "product"],
+                        "-"
+                      )}
+                    </td>
+                    <td>
+                      <strong>{quantity}</strong>
+                    </td>
+                    <td>{reorder}</td>
+                    <td>
+                      <span
+                        className={
+                          low
+                            ? "status status-danger"
+                            : "status status-success"
+                        }
+                      >
+                        {low ? "Low Stock" : "Healthy"}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {filtered.length === 0 && (
+            <div className="empty-state">No inventory records found.</div>
+          )}
+        </div>
+      </div>
+    </PageLayout>
+  );
+}
+
+function Demands({ demands, vendors, inventory, refresh }) {
+  const [vendorId, setVendorId] = useState("");
+  const [productId, setProductId] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [priority, setPriority] = useState("normal");
+  const [message, setMessage] = useState("");
+
+  const vendorInventory = inventory.filter(
+    (item) =>
+      String(getValue(item, ["vendor_id", "vendorId", "vendor"], "")) ===
+      String(vendorId)
+  );
+
+  const createDemand = async () => {
+    if (!vendorId || !productId || !quantity) {
+      setMessage("Please fill all demand fields.");
+      return;
+    }
+
+    try {
+      await request(`/vendors/${vendorId}/demands`, {
+        method: "POST",
+        body: JSON.stringify({
+          items: [
+            {
+              product_id: productId,
+              quantity: Number(quantity)
+            }
+          ],
+          priority
+        })
+      });
+
+      setMessage("Demand created successfully.");
+      setQuantity("");
+      refresh();
+    } catch (error) {
+      setMessage("Unable to create demand. Check backend endpoints.");
+    }
+  };
+
+  const confirmDemand = async (demand) => {
+    const id = getValue(demand, ["_id", "id", "demand_id"], "");
+
+    if (!id) return;
+
+    try {
+      await request(`/vendors/${vendorId || getValue(demand, ["vendor_id", "vendorId"])}/demands/${id}/confirm`, {
+        method: "POST"
+      });
+
+      refresh();
+    } catch {
+      setMessage("Unable to confirm demand.");
+    }
+  };
+
+  const syncInventory = async (demand) => {
+    const vendor =
+      vendorId || getValue(demand, ["vendor_id", "vendorId", "vendor"], "");
+
+    try {
+      await request(`/vendors/${vendor}/inventory/sync`, {
+        method: "POST"
+      });
+
+      refresh();
+    } catch {
+      setMessage("Unable to synchronize inventory.");
+    }
+  };
+
+  return (
+    <div>
+      <div className="page-heading-large">
+        <h1>Demand Center</h1>
+        <p>Create, confirm and synchronize vendor demands</p>
+      </div>
+
+      {message && (
+        <div className="alert alert-warning">
+          <AlertTriangle size={16} />
+          {message}
+        </div>
+      )}
+
+      <div className="form-card">
+        <div className="form-card-title">
+          <div>
+            <h3>Create Demand</h3>
+            <p>Raise a new requirement for a vendor</p>
           </div>
+        </div>
+
+        <div className="form-grid">
+          <div className="form-group">
+            <label>Vendor</label>
+            <select
+              value={vendorId}
+              onChange={(e) => {
+                setVendorId(e.target.value);
+                setProductId("");
+              }}
+            >
+              <option value="">Select vendor</option>
+              {vendors.map((vendor, index) => {
+                const id = getValue(
+                  vendor,
+                  ["vendor_id", "vendorId", "id", "_id"],
+                  ""
+                );
+
+                return (
+                  <option key={id || index} value={id}>
+                    {id} - {getValue(vendor, ["name", "vendor_name"], "Vendor")}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label>Product</label>
+            <select
+              value={productId}
+              onChange={(e) => setProductId(e.target.value)}
+            >
+              <option value="">Select product</option>
+
+              {vendorInventory.map((item, index) => {
+                const id = getValue(
+                  item,
+                  ["product_id", "productId", "product"],
+                  ""
+                );
+
+                return (
+                  <option key={id || index} value={id}>
+                    {id}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label>Quantity</label>
+            <input
+              type="number"
+              min="1"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Priority</label>
+            <select
+              value={priority}
+              onChange={(e) => setPriority(e.target.value)}
+            >
+              <option value="normal">Normal</option>
+              <option value="high">High</option>
+              <option value="urgent">Urgent</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="form-actions">
+          <button className="primary-btn" onClick={createDemand}>
+            <FileText size={15} />
+            Create Demand
+          </button>
+        </div>
+      </div>
+
+      <div className="page-heading-small">
+        <h2>Demand Requests</h2>
+        <p>Manage current vendor demand requests</p>
+      </div>
+
+      <div className="table-card">
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Demand ID</th>
+                <th>Vendor</th>
+                <th>Priority</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {demands.map((demand, index) => {
+                const id = getValue(
+                  demand,
+                  ["_id", "id", "demand_id"],
+                  "-"
+                );
+
+                const status = getValue(demand, ["status"], "pending");
+
+                const vendor = getValue(
+                  demand,
+                  ["vendor_id", "vendorId", "vendor"],
+                  "-"
+                );
+
+                return (
+                  <tr key={id || index}>
+                    <td>{id}</td>
+                    <td>{vendor}</td>
+                    <td>
+                      {formatStatus(
+                        getValue(demand, ["priority"], "normal")
+                      )}
+                    </td>
+                    <td>
+                      <span className={statusClass(status)}>
+                        {formatStatus(status)}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="action-buttons">
+                        <button
+                          className="secondary-btn small-btn"
+                          onClick={() => confirmDemand(demand)}
+                        >
+                          <CheckCircle2 size={13} />
+                          Confirm
+                        </button>
+
+                        <button
+                          className="primary-btn small-btn"
+                          onClick={() => syncInventory(demand)}
+                        >
+                          <RefreshCw size={13} />
+                          Sync
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {demands.length === 0 && (
+            <div className="empty-state">
+              <FileText size={28} />
+              <h3>No demand requests</h3>
+              <p>Create a demand request using the form above.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Restocking({ restocks, search, setSearch }) {
+  const filtered = restocks.filter((item) =>
+    JSON.stringify(item).toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <PageLayout
+      title="Restocking"
+      subtitle="Monitor restock requests"
+      search={search}
+      setSearch={setSearch}
+    >
+      <div className="table-card">
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Request ID</th>
+                <th>Vendor</th>
+                <th>Product</th>
+                <th>Quantity</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {filtered.map((item, index) => {
+                const status = getValue(item, ["status"], "pending");
+
+                return (
+                  <tr key={item._id || item.id || index}>
+                    <td>{getValue(item, ["_id", "id", "request_id"], "-")}</td>
+                    <td>{getValue(item, ["vendor_id", "vendorId"], "-")}</td>
+                    <td>{getValue(item, ["product_id", "productId"], "-")}</td>
+                    <td>{getValue(item, ["quantity"], "-")}</td>
+                    <td>
+                      <span className={statusClass(status)}>
+                        {formatStatus(status)}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {filtered.length === 0 && (
+            <div className="empty-state">No restock requests found.</div>
+          )}
+        </div>
+      </div>
+    </PageLayout>
+  );
+}
+
+function Activity({ logs, search, setSearch }) {
+  const filtered = logs.filter((log) =>
+    JSON.stringify(log).toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <PageLayout
+      title="Activity"
+      subtitle="Backend activity and system logs"
+      search={search}
+      setSearch={setSearch}
+    >
+      <div className="activity-card">
+        <div className="activity-list">
+          {filtered.map((log, index) => (
+            <div className="activity-item" key={log._id || log.id || index}>
+              <div className="activity-icon">
+                <FileText size={14} />
+              </div>
+
+              <div>
+                <div className="activity-text">
+                  {getValue(
+                    log,
+                    ["message", "action", "event", "description"],
+                    "Activity recorded"
+                  )}
+                </div>
+
+                <div className="activity-time">
+                  {getValue(log, ["created_at", "timestamp", "time"], "")}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {filtered.length === 0 && (
+          <div className="empty-state">No activity found.</div>
         )}
-      </section>
-    </>
+      </div>
+    </PageLayout>
+  );
+}
+
+function PageLayout({ title, subtitle, search, setSearch, children }) {
+  return (
+    <div>
+      <div className="page-toolbar">
+        <div>
+          <h1 className="page-title">{title}</h1>
+          <p className="page-subtitle">{subtitle}</p>
+        </div>
+
+        <div className="search-box">
+          <Search size={15} />
+          <input
+            placeholder="Search..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+      </div>
+
+      {children}
+    </div>
   );
 }
 
 function App() {
-  const [page, setPage] =
-    useState("dashboard");
+  const [page, setPage] = useState("dashboard");
+  const [mobileOpen, setMobileOpen] = useState(false);
 
-  const [sidebarOpen, setSidebarOpen] =
-    useState(false);
+  const [vendors, setVendors] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [demands, setDemands] = useState([]);
+  const [restocks, setRestocks] = useState([]);
+  const [logs, setLogs] = useState([]);
 
-  const [loading, setLoading] =
-    useState(false);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  const [vendors, setVendors] =
-    useState([]);
+  const loadData = async () => {
+    try {
+      setLoading(true);
 
-  const [products, setProducts] =
-    useState([]);
+      const vendorData = await request("/vendors");
+      const vendorList = Array.isArray(vendorData)
+        ? vendorData
+        : vendorData.vendors || [];
 
-  const [inventory, setInventory] =
-    useState([]);
+      setVendors(vendorList);
 
-  const [restocks, setRestocks] =
-    useState([]);
-
-  const [logs, setLogs] =
-    useState([]);
-
-  const [errors, setErrors] =
-    useState({
-      vendors: "",
-      products: "",
-      inventory: "",
-      restocks: "",
-      logs: ""
-    });
-
-  async function getJson(path) {
-    const response =
-      await fetch(`${API}${path}`);
-
-    if (!response.ok) {
-      throw new Error(
-        `${response.status} ${response.statusText}`
-      );
-    }
-
-    return response.json();
-  }
-
-  async function loadVendors() {
-    const data =
-      await getJson("/vendors");
-
-    return data.vendors || [];
-  }
-
-  async function loadProducts(vendorList) {
-    const results =
-      await Promise.all(
-        vendorList.map(
-          async vendor => {
-            const vendorId =
-              getValue(
-                vendor,
-                [
-                  "vendor_id",
-                  "user_id",
-                  "_id"
-                ],
-                ""
-              );
-
-            if (!vendorId) {
-              return [];
-            }
-
-            try {
-              const data =
-                await getJson(
-                  `/vendors/${encodeURIComponent(
-                    vendorId
-                  )}/products`
-                );
-
-              return (
-                data.products || []
-              ).map(product => ({
-                ...product,
-                source_vendor_id:
-                  vendorId
-              }));
-            } catch {
-              return [];
-            }
-          }
-        )
-      );
-
-    const map =
-      new Map();
-
-    results
-      .flat()
-      .forEach(product => {
-        const key =
-          product.product_id ||
-          product._id ||
-          product.product_name;
-
-        if (
-          key &&
-          !map.has(key)
-        ) {
-          map.set(
-            key,
-            product
+      const productResults = await Promise.all(
+        vendorList.map(async (vendor) => {
+          const id = getValue(
+            vendor,
+            ["vendor_id", "vendorId", "id", "_id"],
+            ""
           );
-        }
-      });
 
-    return Array.from(
-      map.values()
-    );
-  }
+          if (!id) return [];
 
-  async function loadInventory(
-    vendorList
-  ) {
-    const results =
-      await Promise.all(
-        vendorList.map(
-          async vendor => {
-            const vendorId =
-              getValue(
-                vendor,
-                [
-                  "vendor_id",
-                  "user_id",
-                  "_id"
-                ],
-                ""
-              );
-
-            if (!vendorId) {
-              return [];
-            }
-
-            try {
-              const data =
-                await getJson(
-                  `/vendors/${encodeURIComponent(
-                    vendorId
-                  )}/inventory`
-                );
-
-              return (
-                data.inventory || []
-              );
-            } catch {
-              return [];
-            }
+          try {
+            const data = await request(`/vendors/${id}/products`);
+            return Array.isArray(data) ? data : data.products || [];
+          } catch {
+            return [];
           }
-        )
+        })
       );
 
-    const map =
-      new Map();
-
-    results
-      .flat()
-      .forEach(item => {
-        const key =
-          item._id ||
-          `${item.vendor_id}-${item.product_id}-${item.product_name}`;
-
-        if (!map.has(key)) {
-          map.set(
-            key,
-            item
+      const inventoryResults = await Promise.all(
+        vendorList.map(async (vendor) => {
+          const id = getValue(
+            vendor,
+            ["vendor_id", "vendorId", "id", "_id"],
+            ""
           );
-        }
-      });
 
-    return Array.from(
-      map.values()
-    );
-  }
+          if (!id) return [];
 
-  async function refreshAll() {
-    setLoading(true);
-
-    setErrors({
-      vendors: "",
-      products: "",
-      inventory: "",
-      restocks: "",
-      logs: ""
-    });
-
-    let vendorList = [];
-
-    try {
-      vendorList =
-        await loadVendors();
-
-      setVendors(
-        vendorList
+          try {
+            const data = await request(`/vendors/${id}/inventory`);
+            return Array.isArray(data) ? data : data.inventory || [];
+          } catch {
+            return [];
+          }
+        })
       );
-    } catch (error) {
-      setErrors(prev => ({
-        ...prev,
-        vendors:
-          `Unable to load vendors: ${error.message}`
-      }));
-    }
 
-    try {
-      const productList =
-        await loadProducts(
-          vendorList
-        );
+      setProducts(productResults.flat());
+      setInventory(inventoryResults.flat());
 
-      setProducts(
-        productList
+      try {
+        const data = await request("/restock-requests");
+        setRestocks(Array.isArray(data) ? data : data.requests || []);
+      } catch {
+        setRestocks([]);
+      }
+
+      try {
+        const data = await request("/logs");
+        setLogs(Array.isArray(data) ? data : data.logs || []);
+      } catch {
+        setLogs([]);
+      }
+
+      const demandResults = await Promise.all(
+        vendorList.map(async (vendor) => {
+          const id = getValue(
+            vendor,
+            ["vendor_id", "vendorId", "id", "_id"],
+            ""
+          );
+
+          if (!id) return [];
+
+          try {
+            const data = await request(`/vendors/${id}/demands`);
+            return Array.isArray(data) ? data : data.demands || [];
+          } catch {
+            return [];
+          }
+        })
       );
+
+      setDemands(demandResults.flat());
     } catch (error) {
-      setErrors(prev => ({
-        ...prev,
-        products:
-          `Unable to load products: ${error.message}`
-      }));
+      console.error(error);
+    } finally {
+      setLoading(false);
     }
-
-    try {
-      const inventoryList =
-        await loadInventory(
-          vendorList
-        );
-
-      setInventory(
-        inventoryList
-      );
-    } catch (error) {
-      setErrors(prev => ({
-        ...prev,
-        inventory:
-          `Unable to load inventory: ${error.message}`
-      }));
-    }
-
-    try {
-      const data =
-        await getJson(
-          "/restock-requests"
-        );
-
-      setRestocks(
-        data.restock_requests || []
-      );
-    } catch (error) {
-      setErrors(prev => ({
-        ...prev,
-        restocks:
-          `Unable to load restock requests: ${error.message}`
-      }));
-    }
-
-    try {
-      const data =
-        await getJson(
-          "/logs"
-        );
-
-      setLogs(
-        data.logs || []
-      );
-    } catch (error) {
-      setErrors(prev => ({
-        ...prev,
-        logs:
-          `Unable to load logs: ${error.message}`
-      }));
-    }
-
-    setLoading(false);
-  }
+  };
 
   useEffect(() => {
-    refreshAll();
+    loadData();
   }, []);
 
-  const pageError =
-    errors[page] ||
-    Object.values(errors).find(Boolean) ||
-    "";
+  useEffect(() => {
+    setSearch("");
+  }, [page]);
+
+  const pageTitle = useMemo(() => {
+    const titles = {
+      dashboard: "Dashboard",
+      vendors: "Vendors",
+      products: "Products",
+      inventory: "Inventory",
+      demands: "Demands",
+      restocking: "Restocking",
+      activity: "Activity"
+    };
+
+    return titles[page] || "Dashboard";
+  }, [page]);
+
+  if (loading) {
+    return (
+      <div className="loading-screen">
+        <div className="loading-box">
+          <div className="loading-logo">B2</div>
+          <div>Loading manufacturer portal...</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="app-shell">
+    <div className="app">
       <Sidebar
         page={page}
         setPage={setPage}
-        open={sidebarOpen}
-        setOpen={setSidebarOpen}
+        open={mobileOpen}
+        setOpen={setMobileOpen}
+        demands={demands}
       />
 
-      <main className="main-content">
-        <div className="mobile-topbar">
-          <button
-            onClick={() =>
-              setSidebarOpen(true)
-            }
-          >
-            <Menu size={21} />
-          </button>
+      <main className="main">
+        <Topbar title={pageTitle} setOpen={setMobileOpen} />
 
-          <div className="mobile-brand">
-            B2P
-          </div>
+        <div className="content">
+          {page === "dashboard" && (
+            <Dashboard
+              vendors={vendors}
+              products={products}
+              inventory={inventory}
+              demands={demands}
+              restocks={restocks}
+              logs={logs}
+              setPage={setPage}
+              refresh={loadData}
+            />
+          )}
 
-          <div className="mobile-status">
-            <span />
-            Online
-          </div>
+          {page === "vendors" && (
+            <Vendors
+              vendors={vendors}
+              search={search}
+              setSearch={setSearch}
+            />
+          )}
+
+          {page === "products" && (
+            <Products
+              products={products}
+              search={search}
+              setSearch={setSearch}
+            />
+          )}
+
+          {page === "inventory" && (
+            <Inventory
+              inventory={inventory}
+              search={search}
+              setSearch={setSearch}
+            />
+          )}
+
+          {page === "demands" && (
+            <Demands
+              demands={demands}
+              vendors={vendors}
+              inventory={inventory}
+              refresh={loadData}
+            />
+          )}
+
+          {page === "restocking" && (
+            <Restocking
+              restocks={restocks}
+              search={search}
+              setSearch={setSearch}
+            />
+          )}
+
+          {page === "activity" && (
+            <Activity
+              logs={logs}
+              search={search}
+              setSearch={setSearch}
+            />
+          )}
         </div>
-
-        {page === "dashboard" && (
-          <Dashboard
-            data={{
-              vendors,
-              products,
-              inventory,
-              restocks,
-              logs
-            }}
-            loading={loading}
-            error={pageError}
-            refresh={refreshAll}
-            setPage={setPage}
-          />
-        )}
-
-        {page === "vendors" && (
-          <Vendors
-            vendors={vendors}
-            loading={loading}
-            error={errors.vendors}
-            refresh={refreshAll}
-          />
-        )}
-
-        {page === "products" && (
-          <Products
-            products={products}
-            loading={loading}
-            error={errors.products}
-            refresh={refreshAll}
-          />
-        )}
-
-        {page === "inventory" && (
-          <Inventory
-            inventory={inventory}
-            loading={loading}
-            error={errors.inventory}
-            refresh={refreshAll}
-          />
-        )}
-
-        {page === "restocking" && (
-          <Restocking
-            restocks={restocks}
-            loading={loading}
-            error={errors.restocks}
-            refresh={refreshAll}
-          />
-        )}
-
-        {page === "logs" && (
-          <Logs
-            logs={logs}
-            loading={loading}
-            error={errors.logs}
-            refresh={refreshAll}
-          />
-        )}
       </main>
     </div>
   );
