@@ -252,6 +252,118 @@ def get_inventory(vendor_id: str = Path(...)):
     return get_vendor_inventory(vendor_id)
 
 
+@app.get("/vendors/{vendor_id}/demands")
+def get_vendor_demands(vendor_id: str = Path(...)):
+    demands = list(
+        COLS["restock_requests"].find({
+            "vendor_id": vendor_id
+        })
+    )
+
+    for demand in demands:
+        demand["_id"] = str(demand["_id"])
+
+    return {
+        "count": len(demands),
+        "demands": demands
+    }
+
+
+@app.post("/vendors/{vendor_id}/demands")
+def create_demand(vendor_id: str = Path(...), data: dict = Body(...)):
+    demand = {
+        "vendor_id": vendor_id,
+        "items": data.get("items", []),
+        "priority": data.get("priority", "normal"),
+        "status": "pending"
+    }
+
+    result = COLS["restock_requests"].insert_one(demand)
+    demand_id = str(result.inserted_id)
+
+    COLS["logs"].insert_one({
+        "action": "create_demand",
+        "vendor_id": vendor_id,
+        "demand_id": demand_id
+    })
+
+    return {
+        "message": "Demand created",
+        "demand_id": demand_id
+    }
+
+
+@app.post("/vendors/{vendor_id}/demands/{demand_id}/confirm")
+def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...)):
+    if not ObjectId.is_valid(demand_id):
+        return {
+            "error": "Invalid demand_id"
+        }
+
+    result = COLS["restock_requests"].update_one(
+        {
+            "_id": ObjectId(demand_id),
+            "vendor_id": vendor_id
+        },
+        {
+            "$set": {
+                "status": "confirmed"
+            }
+        }
+    )
+
+    if result.matched_count == 0:
+        return {
+            "error": "Demand not found"
+        }
+
+    return {
+        "message": "Demand confirmed",
+        "demand_id": demand_id
+    }
+
+
+@app.post("/vendors/{vendor_id}/inventory/sync")
+def sync_inventory(vendor_id: str = Path(...)):
+    demands = list(
+        COLS["restock_requests"].find({
+            "vendor_id": vendor_id,
+            "status": "confirmed"
+        })
+    )
+
+    for demand in demands:
+        for item in demand.get("items", []):
+            COLS["inventory"].update_one(
+                {
+                    "vendor_id": vendor_id,
+                    "product_id": item.get("product_id")
+                },
+                {
+                    "$inc": {
+                        "quantity": item.get("quantity", 0)
+                    }
+                },
+                upsert=True
+            )
+
+        COLS["restock_requests"].update_one(
+            {
+                "_id": demand["_id"]
+            },
+            {
+                "$set": {
+                    "status": "synchronized"
+                }
+            }
+        )
+
+    return {
+        "message": "Inventory synchronized",
+        "synced_demands": len(demands)
+    }
+
+
 @app.get("/pending/vendors")
 def get_pending_vendors():
     vendors = list(
