@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 from pathlib import Path as FilePath
 from bson import ObjectId
+import bcrypt
 
 BASE_DIR = FilePath(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -29,6 +30,7 @@ client = MongoClient(MONGODB_URI)
 db = client["b2p"]
 
 COLS = {
+    "users": db["users"],
     "vendors": db["vendors"],
     "products": db["products"],
     "batches": db["batches"],
@@ -44,14 +46,56 @@ COLS = {
     "feature_snapshots": db["feature_snapshots"],
 }
 
+def hash_password(password):
+    return bcrypt.hashpw(
+        password.encode(),
+        bcrypt.gensalt()
+    ).decode()
 
-@app.get("/")
-def home():
+
+def check_password(password, password_hash):
+    return bcrypt.checkpw(
+        password.encode(),
+        password_hash.encode()
+    )
+
+
+def login_user(login, password):
+
+    user = COLS["users"].find_one({
+        "$or": [
+            {"email": login},
+            {"phone": login}
+        ]
+    })
+
+    if not user:
+        return {"error": "Invalid login"}
+
+    if not check_password(
+        password,
+        user["password_hash"]
+    ):
+        return {"error": "Invalid login"}
+
+    if not user.get("is_verified", False):
+        return {"error": "User is not verified"}
+
     return {
-        "database": "b2p",
-        "collections": list(COLS.keys())
+        "message": "Login successful",
+        "user_id": user["user_id"],
+        "role": user["role"],
+        "email": user["email"]
     }
 
+
+@app.post("/login")
+def login(data: dict = Body(...)):
+
+    login = data.get("login")
+    password = data.get("password")
+
+    return login_user(login, password)
 
 @app.get("/users")
 def get_users():
@@ -156,7 +200,6 @@ def get_vendor(vendor_id: str = Path(...)):
         "vendor": vendor
     }
 
-
 @app.get("/vendors/{vendor_id}/products")
 def get_vendor_products(vendor_id: str = Path(...)):
     vid = vendor_id
@@ -169,48 +212,63 @@ def get_vendor_products(vendor_id: str = Path(...)):
         if vendor and "vendor_id" in vendor:
             vid = vendor["vendor_id"]
 
-    inv_items = list(
+    inventory = list(
         COLS["inventory"].find({
             "$or": [
-                {
-                    "vendor_id": vid
-                },
-                {
-                    "vendor_id": vendor_id
-                }
+                {"vendor_id": vid},
+                {"vendor_id": vendor_id}
             ]
         })
     )
 
+    product_ids = [
+        item.get("product_id")
+        for item in inventory
+        if item.get("product_id")
+    ]
+
     product_names = [
         item.get("product_name")
-        for item in inv_items
+        for item in inventory
         if item.get("product_name")
     ]
 
+    query = {
+        "$or": []
+    }
+
+    if product_ids:
+        query["$or"].append({
+            "product_id": {
+                "$in": product_ids
+            }
+        })
+
     if product_names:
-        products = list(
-            COLS["products"].find({
-                "product_name": {
-                    "$in": product_names
-                }
-            })
-        )
-    else:
-        products = list(
-            COLS["products"].find()
-        )
+        query["$or"].append({
+            "product_name": {
+                "$in": product_names
+            }
+        })
+
+    if not query["$or"]:
+        return {
+            "count": 0,
+            "products": []
+        }
+
+    products = list(
+        COLS["products"].find(query)
+    )
 
     for product in products:
         product["_id"] = str(product["_id"])
-
-        if "vendor_id" in product:
-            product["vendor_id"] = str(product["vendor_id"])
 
     return {
         "count": len(products),
         "products": products
     }
+
 
 
 @app.get("/vendors/{vendor_id}/inventory")
@@ -252,21 +310,78 @@ def get_inventory(vendor_id: str = Path(...)):
     return get_vendor_inventory(vendor_id)
 
 
-@app.get("/vendors/{vendor_id}/demands")
-def get_vendor_demands(vendor_id: str = Path(...)):
-    demands = list(
-        COLS["restock_requests"].find({
-            "vendor_id": vendor_id
-        })
-    )
+@app.post("/vendors/{vendor_id}/demands")
+def create_demand(
+    vendor_id: str = Path(...),
+    data: dict = Body(...)
+):
 
-    for demand in demands:
-        demand["_id"] = str(demand["_id"])
+    items = data.get("items", [])
+
+    if not items:
+        return {
+            "error": "No products selected"
+        }
+
+    demand_items = []
+
+    for item in items:
+
+        product_id = item.get("product_id")
+        quantity = item.get("quantity", 0)
+
+        if not product_id:
+            return {
+                "error": "product_id is required"
+            }
+
+        if quantity <= 0:
+            return {
+                "error": "Quantity must be greater than 0"
+            }
+
+        inventory = COLS["inventory"].find_one({
+            "vendor_id": vendor_id,
+            "product_id": product_id
+        })
+
+        if not inventory:
+            return {
+                "error": f"Product {product_id} is not mapped to this vendor"
+            }
+
+        demand_items.append({
+            "product_id": product_id,
+            "product_name": inventory.get("product_name"),
+            "batch_number": inventory.get("batch_number"),
+            "inventory_id": inventory.get("inventory_id"),
+            "quantity": quantity
+        })
+
+    demand = {
+        "vendor_id": vendor_id,
+        "items": demand_items,
+        "priority": data.get("priority", "normal"),
+        "status": "pending"
+    }
+
+    result = COLS["restock_requests"].insert_one(demand)
+
+    demand_id = str(result.inserted_id)
+
+    COLS["logs"].insert_one({
+        "action": "create_demand",
+        "vendor_id": vendor_id,
+        "demand_id": demand_id
+    })
 
     return {
-        "count": len(demands),
-        "demands": demands
+        "message": "Demand created",
+        "demand_id": demand_id,
+        "status": "pending"
     }
+
+
 
 
 @app.post("/vendors/{vendor_id}/demands")
