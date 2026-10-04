@@ -1,4 +1,4 @@
-# B2B - B2P (Business-to-Partner) Platform
+# B2B - B2P (Batter 2 Platter) Platform
 
 A FastAPI backend for managing vendors, products, inventory, orders, and restocking for a partner shop network.
 
@@ -16,7 +16,7 @@ A FastAPI backend for managing vendors, products, inventory, orders, and restock
 
 3. Run the server:
    ```
-   python backend/test.py
+   python backend/main.py
    ```
 
    Server runs at `http://localhost:5000`.

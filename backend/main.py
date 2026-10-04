@@ -1,12 +1,16 @@
 import os
+import warnings
+from pathlib import Path as FilePath
 
 from fastapi import FastAPI, Path, Body
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from pathlib import Path as FilePath
 from bson import ObjectId
 import bcrypt
+import joblib
+import numpy as np
+import pandas as pd
 
 BASE_DIR = FilePath(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -45,6 +49,37 @@ COLS = {
     "festival_calendar": db["festival_calendar"],
     "feature_snapshots": db["feature_snapshots"],
 }
+
+# ------------------------------------------------------------
+# Machine Learning Models (Demand Forecast & Spoilage Risk)
+# ------------------------------------------------------------
+MODELS_DIR = BASE_DIR / "models"
+warnings.filterwarnings("ignore")
+
+
+def load_model_bundle(filenames):
+    for fname in filenames:
+        model_path = MODELS_DIR / fname
+        if model_path.exists():
+            try:
+                bundle = joblib.load(model_path)
+                print(f"[INFO] Loaded model: {fname}")
+                return bundle
+            except Exception as e:
+                print(f"[WARN] Failed to load {model_path}: {e}")
+    return None
+
+
+demand_bundle = load_model_bundle([
+    "demand_forecast_model (2).pkl",
+    "demand_forecast_model.pkl"
+])
+
+spoilage_bundle = load_model_bundle([
+    "spoilage_risk_model (2).pkl",
+    "spoilage_risk_model.pkl"
+])
+
 
 def hash_password(password):
     return bcrypt.hashpw(
