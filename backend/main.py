@@ -3,8 +3,8 @@ import math
 import datetime
 import warnings
 from pathlib import Path as FilePath
-
-from fastapi import FastAPI, Path, Body
+from fastapi import FastAPI, Body, HTTPException, status
+from fastapi import FastAPI, HTTPException, Path, Body
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -37,6 +37,7 @@ db = client["b2p"]
 
 COLS = {
     "users": db["users"],
+    "customers": db["customers"],
     "vendors": db["vendors"],
     "products": db["products"],
     "batches": db["batches"],
@@ -176,33 +177,62 @@ def get_vendors():
 @app.post("/vendors")
 def create_vendor(data: dict = Body(...)):
     vendor_id = data.get("vendor_id")
+    email = data.get("email")
+    password = data.get("password")
+    phone = data.get("phone", "")
 
-    if vendor_id:
-        existing = COLS["vendors"].find_one({
-            "vendor_id": vendor_id
-        })
+    if not email or not password:
+        return {"error": "Email and password are required to create a vendor account"}
 
-        if existing:
-            return {
-                "error": "Vendor with this vendor_id already exists"
-            }
+    if vendor_id and COLS["vendors"].find_one({"vendor_id": vendor_id}):
+        return {"error": "Vendor with this vendor_id already exists"}
 
-    if "status" not in data:
-        data["status"] = "pending"
+    if COLS["users"].find_one({"email": email}):
+        return {"error": "User with this email already exists"}
 
-    result = COLS["vendors"].insert_one(data)
-    data["_id"] = str(result.inserted_id)
+    location = data.get("location", {})
+    vendor_location = {
+        "latitude": location.get("latitude", data.get("latitude")),
+        "longitude": location.get("longitude", data.get("longitude")),
+        "address": location.get("address", data.get("address", ""))
+    }
+
+    vendor_doc = {
+        "vendor_id": vendor_id,
+        "shop_name": data.get("shop_name", ""),
+        "locality_tier": data.get("locality_tier", "mixed"),
+        "status": data.get("status", "pending"),
+        "location": vendor_location,
+        "email": email,
+        "phone": phone
+    }
+    
+    vendor_result = COLS["vendors"].insert_one(vendor_doc)
+    vendor_doc["_id"] = str(vendor_result.inserted_id)
+
+
+    user_doc = {
+        "user_id": vendor_id or vendor_doc["_id"],
+        "email": email,
+        "phone": phone,
+        "password_hash": hash_password(password),
+        "role": "vendor",
+        "is_verified": data.get("is_verified", True)  # Set default verification
+    }
+    
+    user_result = COLS["users"].insert_one(user_doc)
 
     COLS["logs"].insert_one({
         "type": "activity",
         "action": "create_vendor",
-        "vendor_id": data["_id"],
+        "vendor_id": vendor_doc["_id"],
+        "user_id": str(user_result.inserted_id),
         "message": f"Registered new vendor {data.get('shop_name', '')}"
     })
 
     return {
-        "message": "Vendor created successfully",
-        "vendor": data
+        "message": "Vendor and User account created successfully",
+        "vendor": vendor_doc
     }
 
 
@@ -852,7 +882,131 @@ def get_restock_requests(
         "count": len(requests),
         "restock_requests": requests
     }
+@app.post("/customers/register")
+def register_customer(data: dict = Body(...)):
+    name = data.get("name", "").strip()
+    email = data.get("email", "").strip().lower()
+    password = data.get("password")
+    phone = data.get("phone", "").strip()
 
+    if not name or not email or not password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Name, email, and password are required"
+        )
+
+    if COLS["users"].find_one({"email": email}):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An account with this email already exists"
+        )
+
+    location = data.get("location", {})
+    customer_location = {
+        "latitude": location.get("latitude", data.get("latitude")),
+        "longitude": location.get("longitude", data.get("longitude")),
+        "address": location.get("address", data.get("address", ""))
+    }
+
+    customer_doc = {
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "location": customer_location,
+        "status": data.get("status", "active"),
+        "created_at": datetime.datetime.utcnow().isoformat()
+    }
+    cust_result = COLS["customers"].insert_one(customer_doc)
+    customer_id = str(cust_result.inserted_id)
+
+    user_doc = {
+        "user_id": customer_id,
+        "email": email,
+        "phone": phone,
+        "password_hash": hash_password(password),
+        "role": "customer",
+        "is_verified": True
+    }
+    COLS["users"].insert_one(user_doc)
+
+    COLS["logs"].insert_one({
+        "type": "activity",
+        "action": "register_customer",
+        "customer_id": customer_id,
+        "message": f"Registered new customer {name}"
+    })
+
+    return {
+        "message": "Customer registered successfully",
+        "customer": {
+            "customer_id": customer_id,
+            "name": name,
+            "email": email,
+            "phone": phone,
+            "location": customer_location
+        }
+    }
+@app.post("/customers/login")
+def login_customer(data: dict = Body(...)):
+    login_id = data.get("login", "").strip().lower()
+    password = data.get("password")
+    new_location = data.get("location")
+
+    if not login_id or not password:
+        raise HTTPException(
+            status_code=400,
+            detail="Login email/phone and password are required"
+        )
+    user = COLS["users"].find_one({
+        "$or": [
+            {"email": login_id},
+            {"phone": login_id}
+        ]
+    })
+
+    if not user or not check_password(password, user["password_hash"]):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email/phone or password"
+        )
+
+    if user.get("role") != "customer":
+        raise HTTPException(
+            status_code=403,
+            detail="This login is not a customer account"
+        )
+
+    customer_id = user["user_id"]
+
+    if new_location:
+        formatted_location = {
+            "latitude": new_location.get("latitude"),
+            "longitude": new_location.get("longitude"),
+            "address": new_location.get("address", ""),
+            "updated_at": datetime.datetime.utcnow().isoformat()
+        }
+
+        COLS["customers"].update_one(
+            {"_id": ObjectId(customer_id)},
+            {"$set": {"location": formatted_location}}
+        )
+
+    customer = COLS["customers"].find_one({"_id": ObjectId(customer_id)})
+    if customer:
+        customer["_id"] = str(customer["_id"])
+
+    COLS["logs"].insert_one({
+        "type": "activity",
+        "action": "login_customer",
+        "customer_id": customer_id,
+        "location_updated": bool(new_location),
+        "timestamp": datetime.datetime.utcnow().isoformat()
+    })
+
+    return {
+        "message": "Customer login successful",
+        "customer": customer
+    }
 
 if __name__ == "__main__":
     import uvicorn
