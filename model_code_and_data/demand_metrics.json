@@ -1,0 +1,30 @@
+{
+  "model": {
+    "MAE": 4.667,
+    "RMSE": 6.461,
+    "WAPE_%": 15.69,
+    "Bias": -0.256,
+    "R2": 0.833
+  },
+  "baseline": {
+    "MAE": 5.724,
+    "RMSE": 7.935,
+    "WAPE_%": 19.24,
+    "Bias": 0.249,
+    "R2": 0.748
+  },
+  "safety_stock": {
+    "Combo_Pack": 4.8,
+    "Dosa_Batter": 8.3,
+    "Idly_Batter": 10.2
+  },
+  "best_params": {
+    "subsample": 0.85,
+    "reg_lambda": 10,
+    "n_estimators": 200,
+    "min_child_weight": 10,
+    "max_depth": 4,
+    "learning_rate": 0.05,
+    "colsample_bytree": 0.7
+  }
+}

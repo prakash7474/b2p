@@ -204,7 +204,6 @@ button:disabled {
   top: 0;
   z-index: 20;
 }
-
 .topbar-left {
   display: flex;
   align-items: center;
