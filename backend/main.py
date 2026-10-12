@@ -3,6 +3,7 @@ import math
 import datetime
 import warnings
 from pathlib import Path as FilePath
+from typing import Optional
 from fastapi import FastAPI, Body, HTTPException, status
 from fastapi import FastAPI, HTTPException, Path, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,7 +32,9 @@ app.add_middleware(
 )
 
 MONGODB_URI = os.getenv("MONGODB_URI")
-client = MongoClient(MONGODB_URI)
+if not MONGODB_URI:
+    raise RuntimeError("MONGODB_URI is missing. Add it to the project root .env file.")
+client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000)
 
 db = client["b2p"]
 
@@ -96,7 +99,7 @@ def check_password(password, password_hash):
         password.encode(),
         password_hash.encode()
     )
-
+    
 
 def login_user(login, password):
 
@@ -127,17 +130,180 @@ def login_user(login, password):
     }
 
 
+def _valid_coordinates(latitude, longitude):
+    try:
+        lat = float(latitude)
+        lon = float(longitude)
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return lat, lon
+
+
+def _location_payload(data):
+    location = data.get("location") or {}
+    latitude = location.get("latitude", data.get("latitude"))
+    longitude = location.get("longitude", data.get("longitude"))
+    address = location.get("address", data.get("address", ""))
+    coords = _valid_coordinates(latitude, longitude)
+    if not coords:
+        return None
+    return {
+        "latitude": coords[0],
+        "longitude": coords[1],
+        "address": address or "",
+        "updated_at": datetime.datetime.utcnow().isoformat()
+    }
+
+
+def _save_customer_location(user, location):
+    if not location or user.get("role") != "customer":
+        return False
+    customer_id = user.get("user_id")
+    if not customer_id or not ObjectId.is_valid(str(customer_id)):
+        return False
+    result = COLS["customers"].update_one(
+        {"_id": ObjectId(str(customer_id))},
+        {"$set": {"location": location}}
+    )
+    return result.matched_count > 0
+
+
+def _vendor_id_values(vendor):
+    values = [vendor.get("vendor_id"), str(vendor.get("_id", ""))]
+    return [value for value in values if value]
+
+
+def find_nearby_vendors(latitude, longitude, radius_meters=5000, product_id=None):
+    """Return active vendors within a radius that have mapped, positive stock."""
+    coords = _valid_coordinates(latitude, longitude)
+    if not coords:
+        raise HTTPException(status_code=400, detail="Valid latitude and longitude are required")
+    try:
+        radius_meters = float(radius_meters)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="radius_meters must be a number")
+    if radius_meters <= 0 or radius_meters > 100000:
+        raise HTTPException(status_code=400, detail="radius_meters must be between 1 and 100000")
+
+    pipeline = [
+        {"$geoNear": {
+            "near": {"type": "Point", "coordinates": [coords[1], coords[0]]},
+            "key": "location_geo",
+            "distanceField": "distance_meters",
+            "maxDistance": radius_meters,
+            "spherical": True,
+            "query": {"$or": [
+                {"status": {"$in": ["active", "approved", "verified"]}},
+                {"verificationStatus": {"$in": ["active", "approved", "verified"]}}
+            ]}
+        }}
+    ]
+    results = []
+    for vendor in COLS["vendors"].aggregate(pipeline):
+        vendor_ids = _vendor_id_values(vendor)
+        if not vendor_ids:
+            continue
+        inventory_query = {
+            "vendor_id": {"$in": vendor_ids},
+            "quantity": {"$gt": 0}
+        }
+        if product_id:
+            inventory_query["product_id"] = product_id
+        stock_items = list(COLS["inventory"].find(inventory_query))
+        if not stock_items:
+            continue
+        for item in stock_items:
+            item["_id"] = str(item["_id"])
+        vendor["_id"] = str(vendor["_id"])
+        vendor["distance_km"] = round(float(vendor.pop("distance_meters", 0)) / 1000, 2)
+        vendor["available_inventory"] = stock_items
+        results.append(vendor)
+    results.sort(key=lambda item: item.get("distance_km", float("inf")))
+    return results
+
+
+def _migrate_vendor_geo_locations():
+    """Create a GeoJSON point from the existing nested latitude/longitude fields."""
+    for vendor in COLS["vendors"].find({"location_geo": {"$exists": False}}):
+        location = vendor.get("location") or {}
+        latitude = location.get("latitude", vendor.get("latitude")) if isinstance(location, dict) else None
+        longitude = location.get("longitude", vendor.get("longitude")) if isinstance(location, dict) else None
+        coords = _valid_coordinates(latitude, longitude)
+        if coords:
+            COLS["vendors"].update_one(
+                {"_id": vendor["_id"]},
+                {"$set": {"location_geo": {
+                    "type": "Point",
+                    "coordinates": [coords[1], coords[0]]
+                }}}
+            )
+
+
+def ensure_indexes():
+    _migrate_vendor_geo_locations()
+
+    def _create_index(collection, keys, name, **kwargs):
+        try:
+            collection.create_index(keys, name=name, **kwargs)
+        except Exception as e:
+            # Ignore conflicts with pre-existing indexes (e.g. auto-named status_1)
+            if "already exists" in str(e) or "IndexOptionsConflict" in str(e) or getattr(e, "code", None) == 85:
+                print(f"[WARN] Skipping index {name}: {e}")
+            else:
+                raise
+
+    _create_index(COLS["vendors"], [("location_geo", "2dsphere")], "vendor_location_geo_2dsphere")
+    _create_index(COLS["vendors"], [("status", 1)], "vendor_status_idx")
+    _create_index(COLS["inventory"], [("vendor_id", 1), ("product_id", 1)], "inventory_vendor_product_idx")
+    _create_index(COLS["inventory"], [("product_id", 1), ("quantity", 1)], "inventory_product_quantity_idx")
+    _create_index(COLS["products"], [("product_id", 1)], "products_product_id_idx")
+    _create_index(COLS["users"], [("email", 1)], "users_email_idx")
+    _create_index(COLS["users"], [("phone", 1)], "users_phone_idx")
+    _create_index(COLS["restock_requests"], [("vendor_id", 1), ("status", 1)], "restock_vendor_status_idx")
+
+
+@app.on_event("startup")
+def startup_database_setup():
+    client.admin.command("ping")
+    ensure_indexes()
+
+
 @app.post("/login")
 def login(data: dict = Body(...)):
 
-    login = data.get("login")
+    login_id = (data.get("login") or "").strip()
+    if "@" in login_id:
+        login_id = login_id.lower()
     password = data.get("password")
 
-    return login_user(login, password)
+    if not login_id or not password:
+        raise HTTPException(status_code=400, detail="Login and password are required")
+    user = COLS["users"].find_one({"$or": [{"email": login_id}, {"phone": login_id}]})
+    if not user or not user.get("password_hash") or not check_password(password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid login")
+    if not user.get("is_verified", False):
+        raise HTTPException(status_code=403, detail="User is not verified")
+
+    response = {
+        "message": "Login successful",
+        "user_id": user.get("user_id"),
+        "role": user.get("role"),
+        "email": user.get("email")
+    }
+    location = _location_payload(data)
+    if user.get("role") == "customer" and location:
+        _save_customer_location(user, location)
+        response["nearby_vendors"] = find_nearby_vendors(
+            location["latitude"], location["longitude"],
+            data.get("radius_meters", 5000), data.get("product_id")
+        )
+    return response
 
 @app.get("/users")
 def get_users():
-    users = list(COLS["vendors"].find())
+    users = list(COLS["users"].find({}, {"password_hash": 0}))
 
     for user in users:
         user["_id"] = str(user["_id"])
@@ -162,16 +328,23 @@ def get_logs():
 
 
 @app.get("/vendors")
-def get_vendors():
+def get_vendors(
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+    radius_meters: float = 5000,
+    product_id: Optional[str] = None
+):
+    # Existing GET /vendors still returns the full list when coordinates are omitted.
+    # Supplying latitude and longitude turns it into a nearby-stock search.
+    if latitude is not None or longitude is not None:
+        if latitude is None or longitude is None:
+            raise HTTPException(status_code=400, detail="Send both latitude and longitude")
+        vendors = find_nearby_vendors(latitude, longitude, radius_meters, product_id)
+        return {"count": len(vendors), "vendors": vendors}
     vendors = list(COLS["vendors"].find())
-
     for vendor in vendors:
         vendor["_id"] = str(vendor["_id"])
-
-    return {
-        "count": len(vendors),
-        "vendors": vendors
-    }
+    return {"count": len(vendors), "vendors": vendors}
 
 
 @app.post("/vendors")
@@ -196,6 +369,7 @@ def create_vendor(data: dict = Body(...)):
         "longitude": location.get("longitude", data.get("longitude")),
         "address": location.get("address", data.get("address", ""))
     }
+    vendor_coords = _valid_coordinates(vendor_location["latitude"], vendor_location["longitude"])
 
     vendor_doc = {
         "vendor_id": vendor_id,
@@ -206,7 +380,12 @@ def create_vendor(data: dict = Body(...)):
         "email": email,
         "phone": phone
     }
-    
+    if vendor_coords:
+        vendor_doc["location_geo"] = {
+            "type": "Point",
+            "coordinates": [vendor_coords[1], vendor_coords[0]]
+        }
+
     vendor_result = COLS["vendors"].insert_one(vendor_doc)
     vendor_doc["_id"] = str(vendor_result.inserted_id)
 
@@ -219,7 +398,7 @@ def create_vendor(data: dict = Body(...)):
         "role": "vendor",
         "is_verified": data.get("is_verified", True)  # Set default verification
     }
-    
+
     user_result = COLS["users"].insert_one(user_doc)
 
     COLS["logs"].insert_one({
@@ -375,6 +554,198 @@ def get_vendor_inventory(vendor_id: str = Path(...)):
 @app.get("/inventory/{vendor_id}")
 def get_inventory(vendor_id: str = Path(...)):
     return get_vendor_inventory(vendor_id)
+
+
+@app.post("/products")
+def create_product(data: dict = Body(...)):
+    product_id = data.get("product_id")
+    product_name = data.get("product_name")
+    if not product_id or not product_name:
+        return {"error": "product_id and product_name are required"}
+    if COLS["products"].find_one({"product_id": product_id}):
+        return {"error": f"Product with product_id {product_id} already exists"}
+    product_doc = {
+        "product_id": product_id,
+        "product_name": product_name,
+        "category": data.get("category", ""),
+        "unit": data.get("unit", "kg"),
+        "shelf_life_hours": data.get("shelf_life_hours", 72),
+        "description": data.get("description", ""),
+        "created_at": datetime.datetime.utcnow().isoformat()
+    }
+    result = COLS["products"].insert_one(product_doc)
+    product_doc["_id"] = str(result.inserted_id)
+    COLS["logs"].insert_one({
+        "type": "activity",
+        "action": "create_product",
+        "product_id": product_id,
+        "message": f"Created product {product_name}"
+    })
+    return {"message": "Product created successfully", "product": product_doc}
+
+
+@app.get("/products")
+def list_products():
+    products = list(COLS["products"].find())
+    for product in products:
+        product["_id"] = str(product["_id"])
+    return {"count": len(products), "products": products}
+
+
+@app.get("/products/{product_id}")
+def get_product(product_id: str = Path(...)):
+    product = COLS["products"].find_one({"product_id": product_id})
+    if product is None and ObjectId.is_valid(product_id):
+        product = COLS["products"].find_one({"_id": ObjectId(product_id)})
+    if product is None:
+        return {"error": "Product not found"}
+    product["_id"] = str(product["_id"])
+    return {"product": product}
+
+
+@app.post("/batches")
+def create_batch(data: dict = Body(...)):
+    vendor_id = data.get("vendor_id")
+    product_id = data.get("product_id")
+    if not vendor_id or not product_id:
+        return {"error": "vendor_id and product_id are required"}
+    vendor = COLS["vendors"].find_one({
+        "$or": [{"vendor_id": vendor_id}, {"_id": ObjectId(vendor_id) if ObjectId.is_valid(vendor_id) else None}]
+    })
+    if not vendor:
+        return {"error": f"Vendor {vendor_id} not found"}
+    product = COLS["products"].find_one({"product_id": product_id})
+    if not product:
+        return {"error": f"Product {product_id} not found. Create the product first."}
+    batch_id = data.get("batch_id") or f"BATCH-{vendor_id}-{product_id}-{datetime.datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    if COLS["batches"].find_one({"batch_id": batch_id}):
+        return {"error": f"Batch {batch_id} already exists"}
+    batch_doc = {
+        "batch_id": batch_id,
+        "vendor_id": vendor_id,
+        "product_id": product_id,
+        "product_name": product.get("product_name"),
+        "quantity": float(data.get("quantity", 0)),
+        "initial_ph": float(data.get("initial_ph", data.get("initialPH", 4.5))),
+        "hours_since_manufacture": float(data.get("hours_since_manufacture", data.get("hoursSinceManufacture", 0))),
+        "ambient_temperature_c": float(data.get("ambient_temperature_c", data.get("ambientTemperatureC", 30.0))),
+        "humidity_pct": float(data.get("humidity_pct", data.get("humidityPct", 65.0))),
+        "fridge_temperature_c": float(data.get("fridge_temperature_c", data.get("fridgeTemperatureC", 4.0))),
+        "hours_on_shelf": float(data.get("hours_on_shelf", data.get("hoursOnShelf", 0))),
+        "sell_through_rate": float(data.get("sell_through_rate", data.get("sellThroughRate", 0.5))),
+        "hours_to_expiry": float(data.get("hours_to_expiry", data.get("hoursToExpiry", 72.0))),
+        "status": data.get("status", "active"),
+        "created_at": datetime.datetime.utcnow().isoformat()
+    }
+    result = COLS["batches"].insert_one(batch_doc)
+    batch_doc["_id"] = str(result.inserted_id)
+    COLS["logs"].insert_one({
+        "type": "activity",
+        "action": "create_batch",
+        "vendor_id": vendor_id,
+        "batch_id": batch_id,
+        "product_id": product_id,
+        "message": f"Created batch {batch_id} for product {product_id}"
+    })
+    return {"message": "Batch created successfully", "batch": batch_doc}
+
+
+@app.get("/batches")
+def list_batches(vendor_id: str = None, product_id: str = None):
+    query = {}
+    if vendor_id:
+        query["vendor_id"] = vendor_id
+    if product_id:
+        query["product_id"] = product_id
+    batches = list(COLS["batches"].find(query))
+    for batch in batches:
+        batch["_id"] = str(batch["_id"])
+    return {"count": len(batches), "batches": batches}
+
+
+@app.get("/batches/{batch_id}")
+def get_batch(batch_id: str = Path(...)):
+    batch = COLS["batches"].find_one({"batch_id": batch_id})
+    if batch is None and ObjectId.is_valid(batch_id):
+        batch = COLS["batches"].find_one({"_id": ObjectId(batch_id)})
+    if batch is None:
+        return {"error": "Batch not found"}
+    batch["_id"] = str(batch["_id"])
+    return {"batch": batch}
+
+
+@app.post("/inventory")
+def create_inventory(data: dict = Body(...)):
+    vendor_id = data.get("vendor_id")
+    product_id = data.get("product_id")
+    if not vendor_id or not product_id:
+        return {"error": "vendor_id and product_id are required"}
+    vendor = COLS["vendors"].find_one({
+        "$or": [{"vendor_id": vendor_id}, {"_id": ObjectId(vendor_id) if ObjectId.is_valid(vendor_id) else None}]
+    })
+    if not vendor:
+        return {"error": f"Vendor {vendor_id} not found"}
+    product = COLS["products"].find_one({"product_id": product_id})
+    if not product:
+        return {"error": f"Product {product_id} not found. Create the product first."}
+    quantity = float(data.get("quantity", 0))
+    if quantity < 0:
+        return {"error": "quantity must be >= 0"}
+    existing = COLS["inventory"].find_one({"vendor_id": vendor_id, "product_id": product_id})
+    if existing:
+        COLS["inventory"].update_one(
+            {"_id": existing["_id"]},
+            {"$set": {
+                "quantity": quantity,
+                "product_name": product.get("product_name"),
+                "batch_number": data.get("batch_number", existing.get("batch_number")),
+                "updated_at": datetime.datetime.utcnow().isoformat()
+            }}
+        )
+        updated = COLS["inventory"].find_one({"_id": existing["_id"]})
+        updated["_id"] = str(updated["_id"])
+        COLS["logs"].insert_one({
+            "type": "activity",
+            "action": "update_inventory",
+            "vendor_id": vendor_id,
+            "product_id": product_id,
+            "quantity": quantity,
+            "message": f"Updated inventory for {product_id} at vendor {vendor_id}"
+        })
+        return {"message": "Inventory updated", "inventory": updated}
+    inventory_doc = {
+        "vendor_id": vendor_id,
+        "product_id": product_id,
+        "product_name": product.get("product_name"),
+        "batch_number": data.get("batch_number"),
+        "quantity": quantity,
+        "created_at": datetime.datetime.utcnow().isoformat(),
+        "updated_at": datetime.datetime.utcnow().isoformat()
+    }
+    result = COLS["inventory"].insert_one(inventory_doc)
+    inventory_doc["_id"] = str(result.inserted_id)
+    COLS["logs"].insert_one({
+        "type": "activity",
+        "action": "create_inventory",
+        "vendor_id": vendor_id,
+        "product_id": product_id,
+        "quantity": quantity,
+        "message": f"Mapped inventory for {product_id} at vendor {vendor_id}"
+    })
+    return {"message": "Inventory created successfully", "inventory": inventory_doc}
+
+
+@app.get("/inventory")
+def list_inventory(vendor_id: str = None, product_id: str = None):
+    query = {}
+    if vendor_id:
+        query["vendor_id"] = vendor_id
+    if product_id:
+        query["product_id"] = product_id
+    items = list(COLS["inventory"].find(query))
+    for item in items:
+        item["_id"] = str(item["_id"])
+    return {"count": len(items), "inventory": items}
 
 
 @app.get("/vendors/{vendor_id}/demand-forecast")
@@ -670,30 +1041,6 @@ def create_demand(
 
 
 
-@app.post("/vendors/{vendor_id}/demands")
-def create_demand(vendor_id: str = Path(...), data: dict = Body(...)):
-    demand = {
-        "vendor_id": vendor_id,
-        "items": data.get("items", []),
-        "priority": data.get("priority", "normal"),
-        "status": "pending"
-    }
-
-    result = COLS["restock_requests"].insert_one(demand)
-    demand_id = str(result.inserted_id)
-
-    COLS["logs"].insert_one({
-        "action": "create_demand",
-        "vendor_id": vendor_id,
-        "demand_id": demand_id
-    })
-
-    return {
-        "message": "Demand created",
-        "demand_id": demand_id
-    }
-
-
 @app.post("/vendors/{vendor_id}/demands/{demand_id}/confirm")
 def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...)):
     if not ObjectId.is_valid(demand_id):
@@ -745,7 +1092,7 @@ def sync_inventory(vendor_id: str = Path(...)):
                         "quantity": item.get("quantity", 0)
                     }
                 },
-                upsert=True
+                upsert=False
             )
 
         COLS["restock_requests"].update_one(
@@ -948,65 +1295,45 @@ def register_customer(data: dict = Body(...)):
     }
 @app.post("/customers/login")
 def login_customer(data: dict = Body(...)):
-    login_id = data.get("login", "").strip().lower()
+    login_id = (data.get("login") or "").strip()
+    if "@" in login_id:
+        login_id = login_id.lower()
     password = data.get("password")
-    new_location = data.get("location")
-
     if not login_id or not password:
-        raise HTTPException(
-            status_code=400,
-            detail="Login email/phone and password are required"
-        )
-    user = COLS["users"].find_one({
-        "$or": [
-            {"email": login_id},
-            {"phone": login_id}
-        ]
-    })
+        raise HTTPException(status_code=400, detail="Login email/phone and password are required")
 
-    if not user or not check_password(password, user["password_hash"]):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid email/phone or password"
-        )
-
+    user = COLS["users"].find_one({"$or": [{"email": login_id}, {"phone": login_id}]})
+    if not user or not user.get("password_hash") or not check_password(password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email/phone or password")
     if user.get("role") != "customer":
-        raise HTTPException(
-            status_code=403,
-            detail="This login is not a customer account"
-        )
+        raise HTTPException(status_code=403, detail="This login is not a customer account")
+    if not user.get("is_verified", True):
+        raise HTTPException(status_code=403, detail="Customer account is not verified")
 
-    customer_id = user["user_id"]
-
-    if new_location:
-        formatted_location = {
-            "latitude": new_location.get("latitude"),
-            "longitude": new_location.get("longitude"),
-            "address": new_location.get("address", ""),
-            "updated_at": datetime.datetime.utcnow().isoformat()
-        }
-
-        COLS["customers"].update_one(
-            {"_id": ObjectId(customer_id)},
-            {"$set": {"location": formatted_location}}
-        )
-
-    customer = COLS["customers"].find_one({"_id": ObjectId(customer_id)})
+    location = _location_payload(data)
+    location_updated = _save_customer_location(user, location)
+    customer_id = user.get("user_id")
+    customer = None
+    if customer_id and ObjectId.is_valid(str(customer_id)):
+        customer = COLS["customers"].find_one({"_id": ObjectId(str(customer_id))})
     if customer:
         customer["_id"] = str(customer["_id"])
 
     COLS["logs"].insert_one({
         "type": "activity",
         "action": "login_customer",
-        "customer_id": customer_id,
-        "location_updated": bool(new_location),
+        "customer_id": str(customer_id),
+        "location_updated": location_updated,
         "timestamp": datetime.datetime.utcnow().isoformat()
     })
 
-    return {
-        "message": "Customer login successful",
-        "customer": customer
-    }
+    response = {"message": "Customer login successful", "customer": customer}
+    if location:
+        response["nearby_vendors"] = find_nearby_vendors(
+            location["latitude"], location["longitude"],
+            data.get("radius_meters", 5000), data.get("product_id")
+        )
+    return response
 
 if __name__ == "__main__":
     import uvicorn
