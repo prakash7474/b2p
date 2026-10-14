@@ -1026,18 +1026,24 @@ function DemandForecast({ vendors }) {
   const totals = useMemo(() => {
     return forecast.reduce(
       (acc, item) => {
-        acc.predicted += Number(item.predicted_demand || 0);
-        acc.order += Number(item.recommended_order || 0);
-        if (Number(item.recommended_order || 0) > 0) acc.restock += 1;
+        const demand = Number(item.predicted_demand || 0);
+        const safety = Number(item.safety_stock || 0);
+        const recStock = Number(item.recommended_stock || demand + safety);
+        const stock = Number(item.current_stock || 0);
+        acc.predicted += demand;
+        acc.recStock += recStock;
+        acc.stock += stock;
+        if (Math.abs(stock - recStock) >= 0.1) acc.mismatches += 1;
         return acc;
       },
-      { predicted: 0, order: 0, restock: 0 }
+      { predicted: 0, recStock: 0, stock: 0, mismatches: 0 }
     );
   }, [forecast]);
 
   const chartData = forecast.map((item) => ({
     product: String(item.product_name || "Product").slice(0, 16),
     predicted: Number(item.predicted_demand || 0),
+    recStock: Number(item.recommended_stock || (Number(item.predicted_demand || 0) + Number(item.safety_stock || 0))),
     stock: Number(item.current_stock || 0)
   }));
 
@@ -1109,27 +1115,28 @@ function DemandForecast({ vendors }) {
       <div className="ai-stats-grid">
         <AIStat
           icon={TrendingUp}
-          title="Total Predicted Demand"
-          value={totals.predicted}
+          title="Predicted Demand"
+          value={totals.predicted.toFixed(1)}
           text="units"
         />
         <AIStat
           icon={ShoppingCart}
-          title="Recommended Order"
-          value={totals.order}
-          text="units"
+          title="Rec. Stock to Hold"
+          value={totals.recStock.toFixed(1)}
+          text="demand + safety"
         />
         <AIStat
-          icon={BarChart3}
-          title="Products Analyzed"
-          value={forecast.length}
-          text="products"
+          icon={Package}
+          title="Current Inventory"
+          value={totals.stock.toFixed(1)}
+          text="in stock"
         />
         <AIStat
           icon={AlertTriangle}
-          title="Need Restocking"
-          value={totals.restock}
+          title="Stock Mismatches"
+          value={totals.mismatches}
           text="products"
+          danger={totals.mismatches > 0}
         />
       </div>
 
@@ -1150,8 +1157,8 @@ function DemandForecast({ vendors }) {
           <div className="ai-chart-card">
             <div className="ai-card-header">
               <div>
-                <h3>Predicted Demand vs Current Stock</h3>
-                <p>Product-level forecast comparison</p>
+                <h3>Demand vs Recommended Stock vs Inventory</h3>
+                <p>Visual comparison for vendor stock holding</p>
               </div>
             </div>
 
@@ -1163,8 +1170,9 @@ function DemandForecast({ vendors }) {
                   <YAxis />
                   <Tooltip />
                   <Legend />
-                  <Bar dataKey="predicted" name="Predicted Demand" />
-                  <Bar dataKey="stock" name="Current Stock" />
+                  <Bar dataKey="predicted" name="Predicted Demand" fill="#d97706" />
+                  <Bar dataKey="recStock" name="Rec. Stock to Hold" fill="#2563eb" />
+                  <Bar dataKey="stock" name="Current Inventory" fill="#475569" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -1173,8 +1181,8 @@ function DemandForecast({ vendors }) {
           <div className="ai-table-card">
             <div className="ai-card-header">
               <div>
-                <h3>Forecast Details</h3>
-                <p>Recommended action for each product</p>
+                <h3>Vendor Demand & Recommended Stock Balance</h3>
+                <p>Demand, safety buffer, recommended stock to hold, and stock mismatch</p>
               </div>
             </div>
 
@@ -1183,36 +1191,59 @@ function DemandForecast({ vendors }) {
                 <thead>
                   <tr>
                     <th>Product</th>
-                    <th>Predicted Demand</th>
-                    <th>Current Stock</th>
+                    <th>Demand</th>
                     <th>Safety Stock</th>
-                    <th>Recommended Order</th>
+                    <th>Rec. Stock to Hold</th>
+                    <th>Current Inventory</th>
+                    <th>Stock Mismatch</th>
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {forecast.map((item, index) => {
-                    const order = Number(item.recommended_order || 0);
+                    const demand = Number(item.predicted_demand || 0);
+                    const safety = Number(item.safety_stock || 0);
+                    const recStock = Number(item.recommended_stock || demand + safety);
+                    const stock = Number(item.current_stock || 0);
+                    const diff = Number((stock - recStock).toFixed(1));
+                    const hasMismatch = Math.abs(diff) >= 0.1;
+                    const isShortage = diff < -0.1;
+
                     return (
                       <tr key={item.product_name || index}>
                         <td><strong>{item.product_name || "-"}</strong></td>
-                        <td>{item.predicted_demand ?? 0}</td>
-                        <td>{item.current_stock ?? 0}</td>
-                        <td>{item.safety_stock ?? 0}</td>
+                        <td>{demand.toFixed(1)}</td>
+                        <td>{safety.toFixed(1)}</td>
+                        <td><strong>{recStock.toFixed(1)}</strong></td>
+                        <td>{stock.toFixed(1)}</td>
                         <td>
-                          <span className={order > 0 ? "order-highlight" : ""}>
-                            {order}
-                          </span>
+                          {hasMismatch ? (
+                            <span
+                              className={
+                                isShortage
+                                  ? "status status-danger"
+                                  : "status status-warning"
+                              }
+                            >
+                              {isShortage
+                                ? `Mismatch: -${Math.abs(diff)} (Shortage)`
+                                : `Mismatch: +${diff} (Surplus)`}
+                            </span>
+                          ) : (
+                            <span className="status status-success">
+                              Matched (Optimal)
+                            </span>
+                          )}
                         </td>
                         <td>
                           <span
                             className={
-                              order > 0
+                              isShortage
                                 ? "status status-warning"
                                 : "status status-success"
                             }
                           >
-                            {order > 0 ? "Restock Needed" : "Stock Healthy"}
+                            {isShortage ? `Restock ${Math.abs(diff)} units` : "Stock Healthy"}
                           </span>
                         </td>
                       </tr>
@@ -1389,15 +1420,19 @@ function SpoilageRisk({ vendors }) {
                 <tr>
                   <th>Batch ID</th>
                   <th>Product</th>
-                  <th>Risk</th>
-                  <th>Probabilities</th>
-                  <th>Recommended Action</th>
+                  <th>Risk Label</th>
+                  <th>Risk Score</th>
                 </tr>
               </thead>
               <tbody>
                 {evaluations.map((item, index) => {
-                  const risk = String(item.risk_label || "Normal");
+                  const risk = String(item.risk_label || "Low");
                   const probabilities = item.probabilities || {};
+                  const score =
+                    item.risk_score ||
+                    formatProbability(
+                      item.risk_score_value || probabilities[risk] || 0
+                    );
 
                   return (
                     <tr key={item.batch_id || index}>
@@ -1405,20 +1440,13 @@ function SpoilageRisk({ vendors }) {
                       <td><strong>{item.product_name || "-"}</strong></td>
                       <td>
                         <span className={statusClass(risk)}>
-                          {risk}
+                          {risk} Risk
                         </span>
                       </td>
                       <td>
-                        <div className="probability-list">
-                          <span>High: {formatProbability(probabilities.High)}</span>
-                          <span>Medium: {formatProbability(probabilities.Medium)}</span>
-                          <span>Normal: {formatProbability(probabilities.Normal)}</span>
-                        </div>
-                      </td>
-                      <td>
-                        <div className="risk-action">
-                          {item.action || "No action specified"}
-                        </div>
+                        <strong style={{ fontSize: "14px" }}>
+                          {score}
+                        </strong>
                       </td>
                     </tr>
                   );

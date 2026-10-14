@@ -134,12 +134,13 @@ export default function RiskScreen() {
         <View>
           <SectionTitle
             title="Batch Risk Evaluation"
-            subtitle="Risk probabilities and recommended action"
+            subtitle="Risk label and calculated risk score for each batch"
           />
           <Card>
             {items.map((item, index) => {
-              const risk = String(item.risk_label ?? "Normal");
+              const risk = String(item.risk_label ?? "Low");
               const probabilities = item.probabilities ?? {};
+              const score = item.risk_score ?? formatProbability(item.risk_score_value ?? probabilities[risk] ?? 0);
               const tone =
                 risk.toLowerCase() === "high"
                   ? "danger"
@@ -167,51 +168,37 @@ export default function RiskScreen() {
                     <StatusPill status={risk.toLowerCase()} label={risk} />
                   </View>
 
-                  <View style={styles.probabilities}>
-                    {(["High", "Medium", "Normal"] as const).map((level) => (
-                      <BarMeter
-                        key={level}
-                        label={level}
-                        value={formatProbability(probabilities[level])}
-                        percent={Number(probabilities[level] ?? 0) * 100}
-                        color={riskBarColor[level]}
-                      />
-                    ))}
-                  </View>
-
-                  <View
-                    style={[
-                      styles.action,
-                      tone === "danger" && styles.actionDanger,
-                      tone === "warning" && styles.actionWarning,
-                      tone === "success" && styles.actionSuccess,
-                    ]}
-                  >
-                    <MaterialCommunityIcons
-                      name={
-                        tone === "success"
-                          ? "check-circle-outline"
-                          : "alert-circle-outline"
-                      }
-                      size={14}
-                      color={
-                        tone === "danger"
-                          ? colors.danger
-                          : tone === "warning"
-                            ? colors.warning
-                            : colors.success
-                      }
-                    />
-                    <Text
-                      style={[
-                        styles.actionText,
-                        tone === "danger" && { color: colors.danger },
-                        tone === "warning" && { color: colors.warning },
-                        tone === "success" && { color: colors.success },
-                      ]}
-                    >
-                      {String(item.action ?? "No action specified")}
-                    </Text>
+                  <View style={styles.scoreContainer}>
+                    <View style={styles.scoreCard}>
+                      <Text style={styles.scoreLabel}>Risk Level</Text>
+                      <Text
+                        style={[
+                          styles.scoreLabelValue,
+                          tone === "danger"
+                            ? styles.scoreDanger
+                            : tone === "warning"
+                              ? styles.scoreWarning
+                              : styles.scoreSuccess,
+                        ]}
+                      >
+                        {risk} Risk
+                      </Text>
+                    </View>
+                    <View style={styles.scoreCard}>
+                      <Text style={styles.scoreLabel}>Risk Score</Text>
+                      <Text
+                        style={[
+                          styles.scoreValue,
+                          tone === "danger"
+                            ? styles.scoreDanger
+                            : tone === "warning"
+                              ? styles.scoreWarning
+                              : styles.scoreSuccess,
+                        ]}
+                      >
+                        {score}
+                      </Text>
+                    </View>
                   </View>
                 </View>
               );
@@ -254,34 +241,40 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontFamily: fonts.regular,
   },
-  probabilities: {
+  scoreContainer: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  scoreCard: {
+    flex: 1,
     backgroundColor: "#faf8f5",
     borderRadius: radius.control,
-    padding: 11,
-    gap: 0,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    gap: 4,
   },
-  action: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 7,
-    padding: 10,
-    borderRadius: radius.control,
-    backgroundColor: colors.neutralBg,
-  },
-  actionDanger: {
-    backgroundColor: colors.dangerBg,
-  },
-  actionWarning: {
-    backgroundColor: colors.warningBg,
-  },
-  actionSuccess: {
-    backgroundColor: colors.successBg,
-  },
-  actionText: {
-    flex: 1,
+  scoreLabel: {
     fontSize: 10,
-    lineHeight: 15,
-    color: colors.neutral,
+    color: colors.muted,
     fontFamily: fonts.regular,
+  },
+  scoreLabelValue: {
+    fontSize: 13,
+    fontWeight: "700",
+    fontFamily: fonts.bold,
+  },
+  scoreValue: {
+    fontSize: 16,
+    fontWeight: "700",
+    fontFamily: fonts.bold,
+  },
+  scoreDanger: {
+    color: colors.danger,
+  },
+  scoreWarning: {
+    color: colors.warning,
+  },
+  scoreSuccess: {
+    color: colors.success,
   },
 });

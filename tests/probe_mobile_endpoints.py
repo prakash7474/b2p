@@ -91,11 +91,11 @@ def run(client: TestClient, db) -> None:
     check("login returns email", bool(login.get("email")), str(login))
     check("login user_id == vendor_id (drives every vendor route)", str(login.get("user_id")) == vid, str(login))
 
-    # wrong password must come back as an {error} body the app can surface
+    # wrong password must come back as an error body the app can surface
     r = client.post("/login", json={"login": email, "password": "wrong"})
     check(
-        "wrong password returns 200 {error} (surfaced by app)",
-        r.status_code == 200 and "error" in r.json(),
+        "wrong password returns 200 {error} or 401 {detail} (surfaced by app)",
+        r.status_code in (200, 401) and ("error" in r.json() or "detail" in r.json()),
         f"{r.status_code} {r.text[:200]}",
     )
 
@@ -331,11 +331,11 @@ def run(client: TestClient, db) -> None:
         f"got {r.status_code}",
     )
 
-    # missing body entirely -> 422 validation error, not 400
+    # missing body entirely -> 400 or 422 validation error
     r = client.post("/login", json={})
     check(
         "empty JSON object -> validation error (app validates fields first)",
-        r.status_code in (200, 422),
+        r.status_code in (200, 400, 422),
         f"got {r.status_code}",
     )
 

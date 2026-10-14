@@ -31,7 +31,12 @@ export type ForecastItem = {
   product_name?: string;
   predicted_demand?: number;
   safety_stock?: number;
+  recommended_stock?: number;
   current_stock?: number;
+  mismatch?: number;
+  has_mismatch?: boolean;
+  mismatch_type?: "deficit" | "surplus" | "matched";
+  mismatch_desc?: string;
   recommended_order?: number;
 };
 
@@ -39,6 +44,8 @@ export type RiskEvaluation = StringMap & {
   batch_id?: string;
   product_name?: string;
   risk_label?: string;
+  risk_score?: string;
+  risk_score_value?: number;
   probabilities?: Record<string, number>;
   action?: string;
 };

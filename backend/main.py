@@ -320,6 +320,20 @@ def startup_database_setup():
     ensure_indexes()
 
 
+@app.get("/")
+def home():
+    expected_collections = [
+        "vendors", "products", "batches", "inventory", "orders",
+        "order_items", "logs", "restock_requests", "predictions",
+        "inventory_movement", "weather_forecast", "festival_calendar",
+        "feature_snapshots"
+    ]
+    return {
+        "database": "b2p",
+        "collections": expected_collections
+    }
+
+
 @app.post("/login")
 def login(data: dict = Body(...)):
 
@@ -354,6 +368,8 @@ def login(data: dict = Body(...)):
 @app.get("/users")
 def get_users():
     users = list(COLS["users"].find({}, {"password_hash": 0}))
+    if not users:
+        users = list(COLS["vendors"].find())
 
     for user in users:
         user["_id"] = str(user["_id"])
@@ -404,13 +420,10 @@ def create_vendor(data: dict = Body(...)):
     password = data.get("password")
     phone = data.get("phone", "")
 
-    if not email or not password:
-        return {"error": "Email and password are required to create a vendor account"}
-
     if vendor_id and COLS["vendors"].find_one({"vendor_id": vendor_id}):
         return {"error": "Vendor with this vendor_id already exists"}
 
-    if COLS["users"].find_one({"email": email}):
+    if email and COLS["users"].find_one({"email": email}):
         return {"error": "User with this email already exists"}
 
     location = data.get("location", {})
@@ -424,10 +437,11 @@ def create_vendor(data: dict = Body(...)):
     vendor_doc = {
         "vendor_id": vendor_id,
         "shop_name": data.get("shop_name", ""),
+        "owner_name": data.get("owner_name", ""),
         "locality_tier": data.get("locality_tier", "mixed"),
         "status": data.get("status", "pending"),
         "location": vendor_location,
-        "email": email,
+        "email": email or "",
         "phone": phone
     }
     if vendor_coords:
@@ -439,28 +453,29 @@ def create_vendor(data: dict = Body(...)):
     vendor_result = COLS["vendors"].insert_one(vendor_doc)
     vendor_doc["_id"] = str(vendor_result.inserted_id)
 
-
-    user_doc = {
-        "user_id": vendor_id or vendor_doc["_id"],
-        "email": email,
-        "phone": phone,
-        "password_hash": hash_password(password),
-        "role": "vendor",
-        "is_verified": data.get("is_verified", True)  # Set default verification
-    }
-
-    user_result = COLS["users"].insert_one(user_doc)
+    user_result_id = None
+    if email and password:
+        user_doc = {
+            "user_id": vendor_id or vendor_doc["_id"],
+            "email": email,
+            "phone": phone,
+            "password_hash": hash_password(password),
+            "role": "vendor",
+            "is_verified": data.get("is_verified", True)  # Set default verification
+        }
+        user_result = COLS["users"].insert_one(user_doc)
+        user_result_id = str(user_result.inserted_id)
 
     COLS["logs"].insert_one({
         "type": "activity",
         "action": "create_vendor",
         "vendor_id": vendor_doc["_id"],
-        "user_id": str(user_result.inserted_id),
+        "user_id": user_result_id,
         "message": f"Registered new vendor {data.get('shop_name', '')}"
     })
 
     return {
-        "message": "Vendor and User account created successfully",
+        "message": "Vendor created successfully",
         "vendor": vendor_doc
     }
 
@@ -548,14 +563,9 @@ def get_vendor_products(vendor_id: str = Path(...)):
         })
 
     if not query["$or"]:
-        return {
-            "count": 0,
-            "products": []
-        }
-
-    products = list(
-        COLS["products"].find(query)
-    )
+        products = list(COLS["products"].find())
+    else:
+        products = list(COLS["products"].find(query))
 
     for product in products:
         product["_id"] = str(product["_id"])
@@ -604,6 +614,62 @@ def get_vendor_inventory(vendor_id: str = Path(...)):
 @app.get("/inventory/{vendor_id}")
 def get_inventory(vendor_id: str = Path(...)):
     return get_vendor_inventory(vendor_id)
+
+
+@app.get("/vendors/{vendor_id}/orders")
+def get_vendor_orders(vendor_id: str = Path(...)):
+    orders = list(
+        COLS["orders"].find({
+            "$or": [
+                {"vendor_id": vendor_id},
+                {"vendor_id": str(vendor_id)}
+            ]
+        })
+    )
+    for order in orders:
+        order["_id"] = str(order["_id"])
+    return {
+        "vendor_id": vendor_id,
+        "count": len(orders),
+        "orders": orders
+    }
+
+
+@app.get("/vendors/{vendor_id}/restock-requests")
+def get_vendor_restock_requests(vendor_id: str = Path(...)):
+    requests = list(
+        COLS["restock_requests"].find({
+            "$or": [
+                {"vendor_id": vendor_id},
+                {"vendor_id": str(vendor_id)}
+            ]
+        })
+    )
+    for req in requests:
+        req["_id"] = str(req["_id"])
+    return {
+        "vendor_id": vendor_id,
+        "count": len(requests),
+        "restock_requests": requests
+    }
+
+
+@app.get("/vendors/{vendor_id}/demands")
+def get_vendor_demands(vendor_id: str = Path(...)):
+    demands = list(
+        COLS["restock_requests"].find({
+            "$or": [
+                {"vendor_id": vendor_id},
+                {"vendor_id": str(vendor_id)}
+            ]
+        })
+    )
+    for demand in demands:
+        demand["_id"] = str(demand["_id"])
+    return {
+        "vendor_id": vendor_id,
+        "demands": demands
+    }
 
 
 @app.post("/products")
@@ -888,13 +954,36 @@ def _vendor_forecast(vendor, ctx, product_map):
             if mapped_product_id
             else 0.0
         )
-        recommended_order = max(0, int(round(predicted_demand + safety_stock - current_stock)))
+
+        demand_val = round(predicted_demand, 1)
+        safety_val = round(safety_stock, 1)
+        recommended_stock = round(demand_val + safety_val, 1)
+        current_val = round(current_stock, 1)
+        mismatch = round(current_val - recommended_stock, 1)
+        has_mismatch = abs(mismatch) >= 0.1
+
+        if mismatch < -0.1:
+            mismatch_type = "deficit"
+            mismatch_desc = f"Shortage of {abs(mismatch):.1f} units"
+        elif mismatch > 0.1:
+            mismatch_type = "surplus"
+            mismatch_desc = f"Surplus of {mismatch:.1f} units"
+        else:
+            mismatch_type = "matched"
+            mismatch_desc = "Stock in balance"
+
+        recommended_order = max(0, int(round(recommended_stock - current_val)))
 
         forecasts.append({
             "product_name": product_name,
-            "predicted_demand": round(predicted_demand, 1),
-            "safety_stock": round(safety_stock, 1),
-            "current_stock": round(current_stock, 1),
+            "predicted_demand": demand_val,
+            "safety_stock": safety_val,
+            "recommended_stock": recommended_stock,
+            "current_stock": current_val,
+            "mismatch": mismatch,
+            "has_mismatch": has_mismatch,
+            "mismatch_type": mismatch_type,
+            "mismatch_desc": mismatch_desc,
             "recommended_order": recommended_order
         })
 
@@ -1039,6 +1128,10 @@ def get_vendor_spoilage_risk(vendor_id: str = Path(...)):
             for cls, p in zip(spoilage_bundle["label_encoder"].classes_, probas)
         }
 
+        score_prob = float(prob_dict.get(risk_label, max(probas)))
+        risk_score_pct = f"{int(round(score_prob * 100))}%"
+        risk_score_num = round(score_prob, 2)
+
         action = "Normal shelf rotation"
         if risk_label == "High":
             action = "Urgent: sell first or return"
@@ -1049,13 +1142,36 @@ def get_vendor_spoilage_risk(vendor_id: str = Path(...)):
             "batch_id": batch_id,
             "product_name": product_name,
             "risk_label": risk_label,
+            "risk_score": risk_score_pct,
+            "risk_score_value": risk_score_num,
             "probabilities": prob_dict,
             "action": action
         })
 
+    high_count = sum(1 for e in evaluations if e["risk_label"] == "High")
+    med_count = sum(1 for e in evaluations if e["risk_label"] == "Medium")
+    low_count = sum(1 for e in evaluations if e["risk_label"] == "Low")
+
+    if evaluations:
+        avg_score = round(sum(e["risk_score_value"] for e in evaluations) / len(evaluations), 2)
+        overall_score_pct = f"{int(round(avg_score * 100))}%"
+        overall_label = "High" if high_count > 0 else ("Medium" if med_count > 0 else "Low")
+    else:
+        avg_score = 0.0
+        overall_score_pct = "0%"
+        overall_label = "Low"
+
     return {
         "vendor_id": vid,
         "count": len(evaluations),
+        "overall_risk_label": overall_label,
+        "overall_risk_score": overall_score_pct,
+        "overall_risk_value": avg_score,
+        "summary": {
+            "high": high_count,
+            "medium": med_count,
+            "low": low_count
+        },
         "evaluations": evaluations
     }
 
@@ -1097,7 +1213,7 @@ def create_demand(
 
         if not inventory:
             return {
-                "error": f"Product {product_id} is not mapped to this vendor"
+                "error": f"Product {product_id} is not mapped"
             }
 
         demand_items.append({
@@ -1112,7 +1228,8 @@ def create_demand(
         "vendor_id": vendor_id,
         "items": demand_items,
         "priority": data.get("priority", "normal"),
-        "status": "pending"
+        "status": "pending",
+        "created_at": datetime.datetime.utcnow()
     }
 
     result = COLS["restock_requests"].insert_one(demand)
@@ -1138,7 +1255,7 @@ def create_demand(
 def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...)):
     if not ObjectId.is_valid(demand_id):
         return {
-            "error": "Invalid demand_id"
+            "error": "Invalid demand ID"
         }
 
     result = COLS["restock_requests"].update_one(
@@ -1148,7 +1265,8 @@ def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...)):
         },
         {
             "$set": {
-                "status": "confirmed"
+                "status": "confirmed",
+                "confirmed_at": datetime.datetime.utcnow()
             }
         }
     )
@@ -1160,7 +1278,8 @@ def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...)):
 
     return {
         "message": "Demand confirmed",
-        "demand_id": demand_id
+        "demand_id": demand_id,
+        "status": "confirmed"
     }
 
 
@@ -1173,20 +1292,44 @@ def sync_inventory(vendor_id: str = Path(...)):
         })
     )
 
+    if not demands:
+        return {
+            "message": "No confirmed demand"
+        }
+
+    updated = []
     for demand in demands:
         for item in demand.get("items", []):
+            pid = item.get("product_id")
+            qty = item.get("quantity", 0)
+            inv = COLS["inventory"].find_one({
+                "vendor_id": vendor_id,
+                "product_id": pid
+            })
+            old_qty = float(inv.get("quantity", 0.0)) if inv else 0.0
+            new_qty = old_qty + float(qty)
             COLS["inventory"].update_one(
                 {
                     "vendor_id": vendor_id,
-                    "product_id": item.get("product_id")
+                    "product_id": pid
                 },
                 {
                     "$inc": {
-                        "quantity": item.get("quantity", 0)
+                        "quantity": qty
+                    },
+                    "$set": {
+                        "last_updated": datetime.datetime.utcnow().isoformat()
                     }
                 },
                 upsert=False
             )
+            updated.append({
+                "product_id": pid,
+                "product_name": (inv.get("product_name") if inv else None) or item.get("product_name", ""),
+                "batch_number": (inv.get("batch_number") if inv else None) or item.get("batch_number", ""),
+                "old_quantity": old_qty,
+                "new_quantity": new_qty
+            })
 
         COLS["restock_requests"].update_one(
             {
@@ -1201,7 +1344,8 @@ def sync_inventory(vendor_id: str = Path(...)):
 
     return {
         "message": "Inventory synchronized",
-        "synced_demands": len(demands)
+        "synced_demands": len(demands),
+        "updated": updated
     }
 
 

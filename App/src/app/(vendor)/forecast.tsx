@@ -49,18 +49,24 @@ export default function ForecastScreen() {
   const items = forecast ?? [];
   const totals = items.reduce(
     (acc, item) => {
-      acc.predicted += Number(item.predicted_demand ?? 0);
-      acc.order += Number(item.recommended_order ?? 0);
-      if (Number(item.recommended_order ?? 0) > 0) acc.restock += 1;
+      const demand = Number(item.predicted_demand ?? 0);
+      const safety = Number(item.safety_stock ?? 0);
+      const recStock = Number(item.recommended_stock ?? demand + safety);
+      const stock = Number(item.current_stock ?? 0);
+      acc.predicted += demand;
+      acc.recStock += recStock;
+      acc.current += stock;
+      if (Math.abs(stock - recStock) >= 0.1) acc.mismatches += 1;
       return acc;
     },
-    { predicted: 0, order: 0, restock: 0 },
+    { predicted: 0, recStock: 0, current: 0, mismatches: 0 },
   );
 
   const chartMax = Math.max(
     1,
     ...items.flatMap((item) => [
       Number(item.predicted_demand ?? 0),
+      Number(item.recommended_stock ?? 0),
       Number(item.current_stock ?? 0),
     ]),
   );
@@ -68,7 +74,7 @@ export default function ForecastScreen() {
   return (
     <Screen
       title="Demand Forecast"
-      subtitle="AI-predicted demand and recommended ordering"
+      subtitle="Vendor demand, recommended stock to hold, and inventory mismatch"
       icon="chart-timeline-variant"
       action={
         <SecondaryButton
@@ -92,23 +98,23 @@ export default function ForecastScreen() {
           sub="units"
         />
         <StatCard
-          icon={(color) => <MaterialCommunityIcons name="cart-outline" size={18} color={color} />}
-          label="Recommended Order"
-          value={totals.order}
-          sub="units"
+          icon={(color) => <MaterialCommunityIcons name="shield-check-outline" size={18} color={color} />}
+          label="Rec. Stock to Hold"
+          value={totals.recStock.toFixed(1)}
+          sub="demand + safety"
         />
         <StatCard
-          icon={(color) => <MaterialCommunityIcons name="chart-bar" size={18} color={color} />}
-          label="Products Analyzed"
-          value={items.length}
-          sub="products"
+          icon={(color) => <MaterialCommunityIcons name="package-variant-closed" size={18} color={color} />}
+          label="Current Inventory"
+          value={totals.current.toFixed(1)}
+          sub="in store"
         />
         <StatCard
-          icon={(color) => <MaterialCommunityIcons name="alert-outline" size={18} color={color} />}
-          label="Need Restocking"
-          value={totals.restock}
+          icon={(color) => <MaterialCommunityIcons name="scale-unbalanced" size={18} color={color} />}
+          label="Stock Mismatches"
+          value={totals.mismatches}
           sub="products"
-          tone={totals.restock > 0 ? "warning" : "success"}
+          tone={totals.mismatches > 0 ? "warning" : "success"}
         />
       </StatGrid>
 
@@ -124,55 +130,79 @@ export default function ForecastScreen() {
         <>
           <View>
             <SectionTitle
-              title="Predicted Demand vs Current Stock"
-              subtitle="Product-level forecast comparison"
+              title="Demand vs Recommended Stock vs Inventory"
+              subtitle="Comparison across active product classes"
             />
             <Card style={styles.chartCard}>
               <View style={styles.legend}>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: colors.primary }]} />
-                  <Text style={styles.legendText}>Predicted Demand</Text>
+                  <Text style={styles.legendText}>Demand</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: colors.warning }]} />
+                  <Text style={styles.legendText}>Rec. Stock (Demand + Safety)</Text>
                 </View>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: colors.sidebar }]} />
-                  <Text style={styles.legendText}>Current Stock</Text>
+                  <Text style={styles.legendText}>Current Inventory</Text>
                 </View>
               </View>
 
-              {items.map((item, index) => (
-                <View
-                  key={String(item.product_name ?? index)}
-                  style={[
-                    styles.chartRow,
-                    index === items.length - 1 && styles.chartRowLast,
-                  ]}
-                >
-                  <Text style={styles.chartProduct} numberOfLines={1}>
-                    {String(item.product_name ?? "Product")}
-                  </Text>
-                  <BarMeter
-                    label="Predicted"
-                    value={Number(item.predicted_demand ?? 0).toFixed(1)}
-                    percent={(Number(item.predicted_demand ?? 0) / chartMax) * 100}
-                    color={colors.primary}
-                  />
-                  <BarMeter
-                    label="Current stock"
-                    value={Number(item.current_stock ?? 0).toFixed(1)}
-                    percent={(Number(item.current_stock ?? 0) / chartMax) * 100}
-                    color={colors.sidebar}
-                  />
-                </View>
-              ))}
+              {items.map((item, index) => {
+                const demand = Number(item.predicted_demand ?? 0);
+                const recStock = Number(item.recommended_stock ?? demand + Number(item.safety_stock ?? 0));
+                const stock = Number(item.current_stock ?? 0);
+
+                return (
+                  <View
+                    key={String(item.product_name ?? index)}
+                    style={[
+                      styles.chartRow,
+                      index === items.length - 1 && styles.chartRowLast,
+                    ]}
+                  >
+                    <Text style={styles.chartProduct} numberOfLines={1}>
+                      {String(item.product_name ?? "Product")}
+                    </Text>
+                    <BarMeter
+                      label="Demand"
+                      value={demand.toFixed(1)}
+                      percent={(demand / chartMax) * 100}
+                      color={colors.primary}
+                    />
+                    <BarMeter
+                      label="Rec. Stock"
+                      value={recStock.toFixed(1)}
+                      percent={(recStock / chartMax) * 100}
+                      color={colors.warning}
+                    />
+                    <BarMeter
+                      label="Current Inventory"
+                      value={stock.toFixed(1)}
+                      percent={(stock / chartMax) * 100}
+                      color={colors.sidebar}
+                    />
+                  </View>
+                );
+              })}
             </Card>
           </View>
 
           <View>
-            <SectionTitle title="Forecast Details" subtitle="Recommended action for each product" />
+            <SectionTitle
+              title="Vendor Demand & Stock Balance"
+              subtitle="Recommended stock to be held and inventory mismatch"
+            />
             <Card>
               {items.map((item, index) => {
-                const order = Number(item.recommended_order ?? 0);
-                const needsRestock = order > 0;
+                const demand = Number(item.predicted_demand ?? 0);
+                const safety = Number(item.safety_stock ?? 0);
+                const recStock = Number(item.recommended_stock ?? demand + safety);
+                const current = Number(item.current_stock ?? 0);
+                const mismatch = Number((current - recStock).toFixed(1));
+                const hasMismatch = Math.abs(mismatch) >= 0.1;
+                const isShortage = mismatch < -0.1;
 
                 return (
                   <View
@@ -187,17 +217,59 @@ export default function ForecastScreen() {
                         {String(item.product_name ?? "Product")}
                       </Text>
                       <StatusPill
-                        status={needsRestock ? "pending" : "active"}
-                        label={needsRestock ? "Restock Needed" : "Stock Healthy"}
+                        status={!hasMismatch ? "active" : isShortage ? "pending" : "synced"}
+                        label={
+                          !hasMismatch
+                            ? "Matched"
+                            : isShortage
+                              ? `Mismatch: -${Math.abs(mismatch)} Deficit`
+                              : `Mismatch: +${mismatch} Surplus`
+                        }
                       />
                     </View>
 
                     <View style={styles.metrics}>
-                      <Metric label="Predicted" value={item.predicted_demand ?? 0} />
-                      <Metric label="In Stock" value={item.current_stock ?? 0} />
-                      <Metric label="Safety" value={item.safety_stock ?? 0} />
-                      <Metric label="Order" value={order} highlight={needsRestock} />
+                      <Metric label="Demand" value={demand} />
+                      <Metric label="Safety Buffer" value={safety} />
+                      <Metric label="Rec. Stock to Hold" value={recStock} highlight />
+                      <Metric label="Current Inventory" value={current} />
                     </View>
+
+                    {hasMismatch ? (
+                      <View
+                        style={[
+                          styles.mismatchAlert,
+                          isShortage ? styles.mismatchDeficit : styles.mismatchSurplus,
+                        ]}
+                      >
+                        <MaterialCommunityIcons
+                          name={isShortage ? "alert-circle-outline" : "information-outline"}
+                          size={15}
+                          color={isShortage ? colors.danger : colors.primaryDark}
+                        />
+                        <Text
+                          style={[
+                            styles.mismatchText,
+                            isShortage ? { color: colors.danger } : { color: colors.primaryDark },
+                          ]}
+                        >
+                          {isShortage
+                            ? `Mismatch Shortage: Current inventory (${current}) is below recommended stock (${recStock}). Restock ${Math.abs(mismatch)} units recommended.`
+                            : `Mismatch Surplus: Current inventory (${current}) exceeds recommended stock (${recStock}) by ${mismatch} units.`}
+                        </Text>
+                      </View>
+                    ) : (
+                      <View style={styles.mismatchBalanced}>
+                        <MaterialCommunityIcons
+                          name="check-circle-outline"
+                          size={15}
+                          color={colors.success}
+                        />
+                        <Text style={styles.mismatchBalancedText}>
+                          Inventory matches recommended stock perfectly ({current} units).
+                        </Text>
+                      </View>
+                    )}
                   </View>
                 );
               })}
@@ -316,5 +388,45 @@ const styles = StyleSheet.create({
     color: colors.primaryDark,
     fontWeight: "700",
     fontFamily: fonts.bold,
+  },
+  mismatchAlert: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+  },
+  mismatchDeficit: {
+    backgroundColor: "#fff5f5",
+    borderColor: "#fed7d7",
+  },
+  mismatchSurplus: {
+    backgroundColor: "#f7fafc",
+    borderColor: "#e2e8f0",
+  },
+  mismatchText: {
+    fontSize: 11,
+    fontFamily: fonts.medium,
+    flex: 1,
+    lineHeight: 15,
+  },
+  mismatchBalanced: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#f0fff4",
+    borderColor: "#c6f6d5",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  mismatchBalancedText: {
+    fontSize: 11,
+    fontFamily: fonts.medium,
+    color: colors.success,
+    flex: 1,
   },
 });

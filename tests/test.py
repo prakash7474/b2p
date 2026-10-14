@@ -1,9 +1,10 @@
 
+import os
 import requests
 
 BASE_URL = "http://localhost:5000"
 
-VENDOR_ID = "V001"
+VENDOR_ID = os.getenv("TEST_VENDOR_ID", "V100")
 
 
 def test_inventory():
@@ -88,11 +89,11 @@ print("VENDOR API TEST")
 print("================================")
 
 # 1. Check existing inventory
-test_inventory()
+inv_result = test_inventory()
 
-# Change this product ID to one that exists
-# in your MongoDB inventory collection.
-PRODUCT_ID = "P001"
+# Auto-detect existing inventory product, or fallback to P001
+inventory_list = inv_result.get("inventory", [])
+PRODUCT_ID = inventory_list[0].get("product_id") if inventory_list else "P001"
 
 # 2. Raise demand
 demand_response = raise_demand(

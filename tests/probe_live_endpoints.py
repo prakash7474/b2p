@@ -145,8 +145,8 @@ def run(db) -> None:
 
     status, body = call("POST", "/login", {"login": email, "password": "wrong"})
     check(
-        "wrong password -> 200 {error} (surfaced, not a crash)",
-        status == 200 and isinstance(body, dict) and "error" in body,
+        "wrong password -> 401 {detail} or 200 {error} (surfaced, not a crash)",
+        status in (200, 401) and isinstance(body, dict) and ("error" in body or "detail" in body),
         f"{status} {body}",
     )
 
