@@ -1,7 +1,9 @@
 import os
 import math
+import re
 import datetime
 import warnings
+from difflib import get_close_matches
 from pathlib import Path as FilePath
 from typing import Optional
 from fastapi import FastAPI, Body, HTTPException, status
@@ -85,6 +87,54 @@ spoilage_bundle = load_model_bundle([
     "spoilage_risk_model (2).pkl",
     "spoilage_risk_model.pkl"
 ])
+
+
+
+def _normalize_name(text):
+    return re.sub(r"[^a-z0-9]", "", str(text).lower())
+
+
+def get_model_product_map():
+    if not demand_bundle:
+        return {}
+    products = list(COLS["products"].find(
+        {}, {"product_id": 1, "product_name": 1}
+    ))
+    by_norm = {}
+    for product in products:
+        product_id = product.get("product_id")
+        name = product.get("product_name")
+        if product_id and name:
+            by_norm[_normalize_name(name)] = product_id
+
+    mapping = {}
+    for label in demand_bundle["product_encoder"].classes_:
+        norm = _normalize_name(label)
+        product_id = by_norm.get(norm)
+        if not product_id:
+            close = get_close_matches(norm, list(by_norm), n=1, cutoff=0.8)
+            if close:
+                product_id = by_norm[close[0]]
+        if product_id:
+            mapping[label] = product_id
+    return mapping
+
+
+def get_vendor_stock_map(vendor_id):
+    inventory_items = list(
+        COLS["inventory"].find({
+            "vendor_id": vendor_id
+        })
+    )
+    stock_by_id = {}
+    for item in inventory_items:
+        product_id = item.get("product_id")
+        quantity = float(item.get("quantity", 0))
+        if product_id:
+            stock_by_id[product_id] = (
+                stock_by_id.get(product_id, 0) + quantity
+            )
+    return stock_by_id
 
 
 def hash_password(password):
@@ -748,65 +798,53 @@ def list_inventory(vendor_id: str = None, product_id: str = None):
     return {"count": len(items), "inventory": items}
 
 
-@app.get("/vendors/{vendor_id}/demand-forecast")
-def get_demand_forecast(vendor_id: str = Path(...)):
-    if not demand_bundle:
-        return {"error": "Demand model not loaded"}
-
-    query = {"vendor_id": vendor_id}
-    if ObjectId.is_valid(vendor_id):
-        query = {"$or": [{"_id": ObjectId(vendor_id)}, {"vendor_id": vendor_id}]}
-
-    vendor = COLS["vendors"].find_one(query)
-    if not vendor:
-        return {"error": "Vendor not found"}
-
-    vid = vendor.get("vendor_id", vendor_id)
-
+def _demand_shared_context():
     now = datetime.datetime.now()
     hour = now.hour
     weekday = now.weekday()
-    is_weekend = 1 if weekday >= 5 else 0
-
-    hour_sin = math.sin(2 * math.pi * hour / 24)
-    hour_cos = math.cos(2 * math.pi * hour / 24)
-    weekday_sin = math.sin(2 * math.pi * weekday / 7)
-    weekday_cos = math.cos(2 * math.pi * weekday / 7)
-
-    locality_tier = vendor.get("locality_tier", "mixed")
-    hotspot_score = float(vendor.get("hotspot_density_score", 0.5))
-
-    try:
-        locality_enc = int(demand_bundle["locality_encoder"].transform([locality_tier])[0])
-    except Exception:
-        locality_enc = 0
 
     weather = COLS["weather_forecast"].find_one() or {}
-    temperature = float(weather.get("temperature_c", 30.0))
-    rain_prob = float(weather.get("rain_probability", 0.1))
-
     festival = COLS["festival_calendar"].find_one() or {}
-    is_festival = int(festival.get("is_festival", 0))
     festival_type = festival.get("festival_type", "none")
-
     try:
         festival_enc = int(demand_bundle["festival_encoder"].transform([festival_type])[0])
     except Exception:
         festival_enc = 1
 
-    inventory_items = list(COLS["inventory"].find({
-        "$or": [{"vendor_id": vid}, {"vendor_id": vendor_id}]
-    }))
+    return {
+        "hour_sin": math.sin(2 * math.pi * hour / 24),
+        "hour_cos": math.cos(2 * math.pi * hour / 24),
+        "weekday_sin": math.sin(2 * math.pi * weekday / 7),
+        "weekday_cos": math.cos(2 * math.pi * weekday / 7),
+        "is_weekend": 1 if weekday >= 5 else 0,
+        "temperature": float(weather.get("temperature_c", 30.0)),
+        "rain_prob": float(weather.get("rain_probability", 0.1)),
+        "is_festival": int(festival.get("is_festival", 0)),
+        "festival_enc": festival_enc,
+    }
 
-    stock_map = {}
-    for item in inventory_items:
-        name = item.get("product_name", item.get("product_id"))
-        stock_map[name] = float(item.get("quantity", 0))
 
-    products = list(demand_bundle["product_encoder"].classes_)
+def _find_vendor(vendor_id):
+    query = {"vendor_id": vendor_id}
+    if ObjectId.is_valid(vendor_id):
+        query = {"$or": [{"_id": ObjectId(vendor_id)}, {"vendor_id": vendor_id}]}
+    return COLS["vendors"].find_one(query)
+
+
+def _vendor_forecast(vendor, ctx, product_map):
+    vid = vendor.get("vendor_id")
+
+    locality_tier = vendor.get("locality_tier", "mixed")
+    hotspot_score = float(vendor.get("hotspot_density_score", 0.5))
+    try:
+        locality_enc = int(demand_bundle["locality_encoder"].transform([locality_tier])[0])
+    except Exception:
+        locality_enc = 0
+
+    stock_map = get_vendor_stock_map(vid)
+
     forecasts = []
-
-    for product_name in products:
+    for product_name in demand_bundle["product_encoder"].classes_:
         snapshot = COLS["feature_snapshots"].find_one({
             "vendor_id": vid,
             "product_id": product_name
@@ -821,15 +859,15 @@ def get_demand_forecast(vendor_id: str = Path(...)):
         product_enc = int(demand_bundle["product_encoder"].transform([product_name])[0])
 
         feature_row = {
-            "hourSin": hour_sin,
-            "hourCos": hour_cos,
-            "weekdaySin": weekday_sin,
-            "weekdayCos": weekday_cos,
-            "isWeekend": is_weekend,
-            "isFestivalWindow": is_festival,
-            "festivalTypeEnc": festival_enc,
-            "forecastTemperatureC": temperature,
-            "forecastRainProbability": rain_prob,
+            "hourSin": ctx["hour_sin"],
+            "hourCos": ctx["hour_cos"],
+            "weekdaySin": ctx["weekday_sin"],
+            "weekdayCos": ctx["weekday_cos"],
+            "isWeekend": ctx["is_weekend"],
+            "isFestivalWindow": ctx["is_festival"],
+            "festivalTypeEnc": ctx["festival_enc"],
+            "forecastTemperatureC": ctx["temperature"],
+            "forecastRainProbability": ctx["rain_prob"],
             "lag1": lag1,
             "lag7": lag7,
             "sameSlot4WeekMean": same_slot_mean,
@@ -844,7 +882,12 @@ def get_demand_forecast(vendor_id: str = Path(...)):
         df_input = pd.DataFrame([feature_row])[demand_bundle["features"]]
         predicted_demand = float(np.clip(demand_bundle["model"].predict(df_input)[0], 0, None))
         safety_stock = float(demand_bundle["safety_stock"].get(product_name, 5.0))
-        current_stock = stock_map.get(product_name, 0.0)
+        mapped_product_id = product_map.get(product_name)
+        current_stock = (
+            stock_map.get(mapped_product_id, 0.0)
+            if mapped_product_id
+            else 0.0
+        )
         recommended_order = max(0, int(round(predicted_demand + safety_stock - current_stock)))
 
         forecasts.append({
@@ -855,10 +898,60 @@ def get_demand_forecast(vendor_id: str = Path(...)):
             "recommended_order": recommended_order
         })
 
+    return forecasts
+
+
+@app.get("/vendors/{vendor_id}/demand-forecast")
+def get_demand_forecast(vendor_id: str = Path(...)):
+    if not demand_bundle:
+        return {"error": "Demand model not loaded"}
+
+    vendor = _find_vendor(vendor_id)
+    if not vendor:
+        return {"error": "Vendor not found"}
+    vendor.setdefault("vendor_id", vendor_id)
+
+    forecasts = _vendor_forecast(
+        vendor, _demand_shared_context(), get_model_product_map()
+    )
     return {
-        "vendor_id": vid,
+        "vendor_id": vendor.get("vendor_id", vendor_id),
         "count": len(forecasts),
         "forecast": forecasts
+    }
+
+
+@app.get("/demand-forecast")
+def get_all_demand_forecasts(vendor_id: Optional[str] = None):
+    if not demand_bundle:
+        return {"error": "Demand model not loaded"}
+
+    ctx = _demand_shared_context()
+    product_map = get_model_product_map()
+
+    if vendor_id:
+        vendor = _find_vendor(vendor_id)
+        if not vendor:
+            return {"error": "Vendor not found"}
+        vendor.setdefault("vendor_id", vendor_id)
+        forecasts = _vendor_forecast(vendor, ctx, product_map)
+        return {
+            "vendor_id": vendor.get("vendor_id", vendor_id),
+            "count": len(forecasts),
+            "forecast": forecasts
+        }
+
+    results = []
+    for vendor in COLS["vendors"].find({}):
+        vid = vendor.get("vendor_id")
+        if not vid:
+            continue
+        for row in _vendor_forecast(vendor, ctx, product_map):
+            results.append({"vendor_id": vid, **row})
+
+    return {
+        "count": len(results),
+        "forecast": results
     }
 
 
