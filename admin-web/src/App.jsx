@@ -15,28 +15,13 @@ import {
   ChevronRight,
   TrendingUp,
   ShieldAlert,
-  Users,
-  UserPlus,
-  LogIn,
-  MapPin,
   Brain,
-  BarChart3,
   Thermometer,
   ShoppingCart,
   Eye,
-  EyeOff
+  EyeOff,
+  Boxes
 } from "lucide-react";
-
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend
-} from "recharts";
 
 import "./App.css";
 
@@ -48,6 +33,24 @@ const getValue = (obj, keys, fallback = "") => {
   }
   return fallback;
 };
+
+// Seed vendors store verificationStatus, app-created ones store status.
+const vendorStatus = (vendor) =>
+  getValue(vendor, ["status", "verificationStatus"], "pending");
+
+// Inventory rows use minimumStock (seed) or minimum_stock.
+const reorderLevel = (item) =>
+  Number(getValue(item, ["reorder_level", "minimumStock", "minimum_stock", "threshold"], 10));
+
+const formatDate = (value) => {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+};
+
+// Spoilage score bands, same as the backend: <=30 Low, 30-70 Medium, >70 High.
+const riskColor = (label) =>
+  label === "High" ? "#c94c4c" : label === "Medium" ? "#c47a18" : "#2f855a";
 
 const formatStatus = (status) =>
   String(status || "unknown")
@@ -113,15 +116,14 @@ function Sidebar({ page, setPage, open, setOpen, demands }) {
       title: "Management",
       links: [
         ["vendors", "Vendors", Store],
-        ["products", "Products", Package],
+        ["batches", "Batches", Boxes],
         ["inventory", "Inventory", Warehouse]
       ]
     },
     {
       title: "Operations",
       links: [
-        ["demands", "Demands", FileText],
-        ["restocking", "Restocking", RefreshCw]
+        ["demands", "Batch Requests", FileText]
       ]
     },
     {
@@ -130,10 +132,6 @@ function Sidebar({ page, setPage, open, setOpen, demands }) {
         ["forecast", "Demand Forecast", TrendingUp],
         ["spoilage", "Spoilage Risk", ShieldAlert]
       ]
-    },
-    {
-      title: "Customers",
-      links: [["customers", "Customer Accounts", Users]]
     },
     {
       title: "System",
@@ -174,7 +172,7 @@ function Sidebar({ page, setPage, open, setOpen, demands }) {
                 <Icon size={17} />
                 <span>{label}</span>
 
-                {id === "demands" && demands.length > 0 && (
+                {id === "demands" && demands.some((d) => d.status === "pending") && (
                   <span className="nav-badge">NEW</span>
                 )}
               </button>
@@ -239,23 +237,19 @@ function Dashboard({
   products,
   inventory,
   demands,
-  restocks,
   logs,
   setPage,
   refresh
 }) {
   const pendingVendors = vendors.filter(
-    (v) => String(getValue(v, ["status"])).toLowerCase() === "pending"
+    (v) => String(vendorStatus(v)).toLowerCase() === "pending"
   ).length;
 
   const lowStock = inventory.filter((item) => {
     const quantity = Number(
       getValue(item, ["quantity", "stock", "available_quantity"], 0)
     );
-    const threshold = Number(
-      getValue(item, ["reorder_level", "minimum_stock", "threshold"], 10)
-    );
-    return quantity <= threshold;
+    return quantity <= reorderLevel(item);
   }).length;
 
   const pendingDemands = demands.filter((d) => {
@@ -298,7 +292,7 @@ function Dashboard({
         />
         <StatCard
           icon={FileText}
-          title="Pending Demands"
+          title="Open Requests"
           value={pendingDemands}
           text={`${demands.length} total requests`}
         />
@@ -306,19 +300,19 @@ function Dashboard({
 
       <div className="dashboard-main-grid">
         <section className="dashboard-section">
-          <h2>Demand Queue</h2>
-          <p>Latest vendor demand requests</p>
+          <h2>Batch Request Queue</h2>
+          <p>Latest vendor batch requests</p>
 
           <div className="dashboard-card">
             {demands.length === 0 ? (
               <div className="demand-empty">
                 <FileText size={25} />
-                <p>No demand requests found.</p>
+                <p>No batch requests found.</p>
                 <button
                   className="open-demand-btn"
                   onClick={() => setPage("demands")}
                 >
-                  Open demand center <ChevronRight size={13} />
+                  Open batch requests <ChevronRight size={13} />
                 </button>
               </div>
             ) : (
@@ -370,8 +364,8 @@ function Dashboard({
             />
             <SnapshotRow
               icon={RefreshCw}
-              label="Restocking"
-              value={restocks.length}
+              label="Batch Requests"
+              value={demands.length}
             />
             <SnapshotRow icon={FileText} label="Activity" value={logs.length} />
           </div>
@@ -459,7 +453,7 @@ function Vendors({ vendors, search, setSearch }) {
             </thead>
             <tbody>
               {filtered.map((vendor, index) => {
-                const status = getValue(vendor, ["status"], "active");
+                const status = vendorStatus(vendor);
 
                 return (
                   <tr key={vendor._id || vendor.id || index}>
@@ -499,68 +493,6 @@ function Vendors({ vendors, search, setSearch }) {
   );
 }
 
-function Products({ products, search, setSearch }) {
-  const filtered = products.filter((product) =>
-    JSON.stringify(product).toLowerCase().includes(search.toLowerCase())
-  );
-
-  return (
-    <PageLayout
-      title="Products"
-      subtitle="Product catalog and details"
-      search={search}
-      setSearch={setSearch}
-    >
-      <div className="table-card">
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Product ID</th>
-                <th>Product</th>
-                <th>Category</th>
-                <th>Price</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((product, index) => {
-                const status = getValue(product, ["status"], "active");
-
-                return (
-                  <tr key={product._id || product.id || index}>
-                    <td>
-                      {getValue(
-                        product,
-                        ["product_id", "productId", "id", "_id"],
-                        "-"
-                      )}
-                    </td>
-                    <td>
-                      {getValue(product, ["name", "product_name", "title"], "-")}
-                    </td>
-                    <td>{getValue(product, ["category", "type"], "-")}</td>
-                    <td>₹{getValue(product, ["price", "unit_price"], "-")}</td>
-                    <td>
-                      <span className={statusClass(status)}>
-                        {formatStatus(status)}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          {filtered.length === 0 && (
-            <div className="empty-state">No products found.</div>
-          )}
-        </div>
-      </div>
-    </PageLayout>
-  );
-}
-
 function Inventory({ inventory, search, setSearch }) {
   const filtered = inventory.filter((item) =>
     JSON.stringify(item).toLowerCase().includes(search.toLowerCase())
@@ -590,13 +522,7 @@ function Inventory({ inventory, search, setSearch }) {
                 const quantity = Number(
                   getValue(item, ["quantity", "stock", "available_quantity"], 0)
                 );
-                const reorder = Number(
-                  getValue(
-                    item,
-                    ["reorder_level", "minimum_stock", "threshold"],
-                    10
-                  )
-                );
+                const reorder = reorderLevel(item);
                 const low = quantity <= reorder;
 
                 return (
@@ -611,7 +537,7 @@ function Inventory({ inventory, search, setSearch }) {
                     <td>
                       {getValue(
                         item,
-                        ["product_id", "productId", "product"],
+                        ["product_name", "product_id", "productId", "product"],
                         "-"
                       )}
                     </td>
@@ -645,85 +571,47 @@ function Inventory({ inventory, search, setSearch }) {
   );
 }
 
-function Demands({ demands, vendors, inventory, refresh }) {
-  const [vendorId, setVendorId] = useState("");
-  const [productId, setProductId] = useState("");
-  const [quantity, setQuantity] = useState("");
-  const [priority, setPriority] = useState("normal");
+// What each request status means on the admin side of the handshake.
+const REQUEST_LABELS = {
+  pending: "Awaiting your decision",
+  confirmed: "Assigned · awaiting vendor confirmation",
+  synchronized: "Confirmed by vendor",
+  rejected: "Rejected"
+};
+
+function Demands({ demands, refresh }) {
   const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState("");
 
-  const vendorInventory = inventory.filter(
-    (item) =>
-      String(getValue(item, ["vendor_id", "vendorId", "vendor"], "")) ===
-      String(vendorId)
-  );
-
-  const createDemand = async () => {
-    if (!vendorId || !productId || !quantity) {
-      setMessage("Please fill all demand fields.");
-      return;
-    }
-
-    try {
-      await request(`/vendors/${vendorId}/demands`, {
-        method: "POST",
-        body: JSON.stringify({
-          items: [
-            {
-              product_id: productId,
-              quantity: Number(quantity)
-            }
-          ],
-          priority
-        })
-      });
-
-      setMessage("Demand created successfully.");
-      setQuantity("");
-      await refresh();
-    } catch (error) {
-      setMessage(error.message || "Unable to create demand.");
-    }
-  };
-
-  const confirmDemand = async (demand) => {
+  const act = async (demand, action) => {
     const id = getValue(demand, ["_id", "id", "demand_id"], "");
-    const vendor =
-      vendorId || getValue(demand, ["vendor_id", "vendorId", "vendor"], "");
-
+    const vendor = getValue(demand, ["vendor_id", "vendorId", "vendor"], "");
     if (!id || !vendor) return;
 
     try {
-      await request(`/vendors/${vendor}/demands/${id}/confirm`, {
-        method: "POST"
+      setBusy(id);
+      const data = await request(`/vendors/${vendor}/demands/${id}/${action}`, {
+        method: "POST",
+        body: action === "reject" ? JSON.stringify({ reason: "Rejected by admin" }) : undefined
       });
+      setMessage(data.error || data.message || "Done.");
       await refresh();
     } catch (error) {
-      setMessage(error.message || "Unable to confirm demand.");
+      setMessage(error.message || `Unable to ${action} request.`);
+    } finally {
+      setBusy("");
     }
   };
 
-  const syncInventory = async (demand) => {
-    const vendor =
-      vendorId || getValue(demand, ["vendor_id", "vendorId", "vendor"], "");
-
-    if (!vendor) return;
-
-    try {
-      await request(`/vendors/${vendor}/inventory/sync`, {
-        method: "POST"
-      });
-      await refresh();
-    } catch (error) {
-      setMessage(error.message || "Unable to synchronize inventory.");
-    }
-  };
+  const sorted = [...demands].sort((a, b) =>
+    String(b.created_at || "").localeCompare(String(a.created_at || ""))
+  );
 
   return (
     <div>
       <div className="page-heading-large">
-        <h1>Demand Center</h1>
-        <p>Create, confirm and synchronize vendor demands</p>
+        <h1>Batch Requests</h1>
+        <p>Vendors request exposed batches; assign one and the vendor confirms delivery</p>
       </div>
 
       {message && (
@@ -733,149 +621,63 @@ function Demands({ demands, vendors, inventory, refresh }) {
         </div>
       )}
 
-      <div className="form-card">
-        <div className="form-card-title">
-          <h3>Create Demand</h3>
-          <p>Raise a new requirement for a vendor</p>
-        </div>
-
-        <div className="form-grid">
-          <FormField label="Vendor">
-            <select
-              value={vendorId}
-              onChange={(e) => {
-                setVendorId(e.target.value);
-                setProductId("");
-              }}
-            >
-              <option value="">Select vendor</option>
-              {vendors.map((vendor, index) => {
-                const id = getValue(
-                  vendor,
-                  ["vendor_id", "vendorId", "id", "_id"],
-                  ""
-                );
-
-                return (
-                  <option key={id || index} value={id}>
-                    {id} - {getValue(vendor, ["shop_name", "name"], "Vendor")}
-                  </option>
-                );
-              })}
-            </select>
-          </FormField>
-
-          <FormField label="Product">
-            <select
-              value={productId}
-              onChange={(e) => setProductId(e.target.value)}
-            >
-              <option value="">Select product</option>
-              {vendorInventory.map((item, index) => {
-                const id = getValue(
-                  item,
-                  ["product_id", "productId", "product"],
-                  ""
-                );
-
-                return (
-                  <option key={id || index} value={id}>
-                    {id}
-                  </option>
-                );
-              })}
-            </select>
-          </FormField>
-
-          <FormField label="Quantity">
-            <input
-              type="number"
-              min="1"
-              value={quantity}
-              onChange={(e) => setQuantity(e.target.value)}
-            />
-          </FormField>
-
-          <FormField label="Priority">
-            <select
-              value={priority}
-              onChange={(e) => setPriority(e.target.value)}
-            >
-              <option value="normal">Normal</option>
-              <option value="high">High</option>
-              <option value="urgent">Urgent</option>
-            </select>
-          </FormField>
-        </div>
-
-        <div className="form-actions">
-          <button className="primary-btn" onClick={createDemand}>
-            <FileText size={15} />
-            Create Demand
-          </button>
-        </div>
-      </div>
-
-      <div className="page-heading-small">
-        <h2>Demand Requests</h2>
-        <p>Manage current vendor demand requests</p>
-      </div>
-
       <div className="table-card">
         <div className="table-wrapper">
           <table>
             <thead>
               <tr>
-                <th>Demand ID</th>
+                <th>Requested</th>
                 <th>Vendor</th>
-                <th>Priority</th>
+                <th>Batch</th>
+                <th>Product</th>
+                <th>Quantity</th>
                 <th>Status</th>
                 <th>Actions</th>
               </tr>
             </thead>
 
             <tbody>
-              {demands.map((demand, index) => {
-                const id = getValue(
-                  demand,
-                  ["_id", "id", "demand_id"],
-                  "-"
-                );
+              {sorted.map((demand, index) => {
+                const id = getValue(demand, ["_id", "id", "demand_id"], "");
                 const value = getValue(demand, ["status"], "pending");
-                const vendor = getValue(
-                  demand,
-                  ["vendor_id", "vendorId", "vendor"],
-                  "-"
-                );
+                const item = demand.items?.[0] || {};
+                const isBatch = Boolean(item.batch_id);
 
                 return (
                   <tr key={id || index}>
-                    <td>{id}</td>
-                    <td>{vendor}</td>
-                    <td>{formatStatus(getValue(demand, ["priority"], "normal"))}</td>
+                    <td>{formatDate(demand.created_at)}</td>
+                    <td>{getValue(demand, ["vendor_id", "vendorId"], "-")}</td>
+                    <td>{item.batch_id || "-"}</td>
+                    <td>{getValue(item, ["product_name", "product_id"], demand.product_name || "-")}</td>
+                    <td>{getValue(item, ["quantity"], demand.requested_quantity_kg ?? "-")} kg</td>
                     <td>
                       <span className={statusClass(value)}>
-                        {formatStatus(value)}
+                        {REQUEST_LABELS[value] || formatStatus(value)}
                       </span>
                     </td>
                     <td>
-                      <div className="action-buttons">
-                        <button
-                          className="secondary-btn small-btn"
-                          onClick={() => confirmDemand(demand)}
-                        >
-                          <CheckCircle2 size={13} />
-                          Confirm
-                        </button>
-
-                        <button
-                          className="primary-btn small-btn"
-                          onClick={() => syncInventory(demand)}
-                        >
-                          <RefreshCw size={13} />
-                          Sync
-                        </button>
-                      </div>
+                      {value === "pending" ? (
+                        <div className="action-buttons">
+                          <button
+                            className="primary-btn small-btn"
+                            disabled={busy === id}
+                            onClick={() => act(demand, "confirm")}
+                          >
+                            <CheckCircle2 size={13} />
+                            {isBatch ? "Assign" : "Confirm"}
+                          </button>
+                          <button
+                            className="secondary-btn small-btn"
+                            disabled={busy === id}
+                            onClick={() => act(demand, "reject")}
+                          >
+                            <X size={13} />
+                            Reject
+                          </button>
+                        </div>
+                      ) : (
+                        "-"
+                      )}
                     </td>
                   </tr>
                 );
@@ -886,8 +688,8 @@ function Demands({ demands, vendors, inventory, refresh }) {
           {demands.length === 0 && (
             <div className="empty-state">
               <FileText size={28} />
-              <h3>No demand requests</h3>
-              <p>Create a demand request using the form above.</p>
+              <h3>No batch requests</h3>
+              <p>Vendors request batches from their Forecast screen.</p>
             </div>
           )}
         </div>
@@ -896,46 +698,153 @@ function Demands({ demands, vendors, inventory, refresh }) {
   );
 }
 
-function Restocking({ restocks, search, setSearch }) {
-  const filtered = restocks.filter((item) =>
-    JSON.stringify(item).toLowerCase().includes(search.toLowerCase())
+// "YYYY-MM-DDTHH:mm" in local time, the format a datetime-local input expects.
+const localNow = () => {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+};
+
+function Batches({ batches, products, search, setSearch, refresh }) {
+  // Only what the manufacturer knows. Shelf life depends on the vendor's storage
+  // and the low-stock alert defaults to 20% of volume, both set by the backend.
+  const [form, setForm] = useState({ product_id: "", volume_kg: "", manufactured_at: localNow() });
+  const [message, setMessage] = useState("");
+
+  const update = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
+
+  const createBatch = async () => {
+    if (!form.product_id || !(Number(form.volume_kg) > 0) || !form.manufactured_at) {
+      setMessage("Select a product, enter a volume greater than 0 and the manufacture time.");
+      return;
+    }
+
+    try {
+      const data = await request("/batches", {
+        method: "POST",
+        body: JSON.stringify({
+          product_id: form.product_id,
+          volume_kg: Number(form.volume_kg),
+          manufactured_at: new Date(form.manufactured_at).toISOString()
+        })
+      });
+      setMessage(data.error || `Batch ${data.batch?.batch_id} created and exposed to vendors.`);
+      if (!data.error) setForm((prev) => ({ ...prev, volume_kg: "", manufactured_at: localNow() }));
+      await refresh();
+    } catch (error) {
+      setMessage(error.message || "Unable to create batch.");
+    }
+  };
+
+  const toggleExposed = async (batch) => {
+    try {
+      const data = await request(`/batches/${batch.batch_id}/visibility`, {
+        method: "POST",
+        body: JSON.stringify({ exposed: batch.exposed === false })
+      });
+      if (data.error) setMessage(data.error);
+      await refresh();
+    } catch (error) {
+      setMessage(error.message || "Unable to change visibility.");
+    }
+  };
+
+  const filtered = batches.filter((batch) =>
+    JSON.stringify(batch).toLowerCase().includes(search.toLowerCase())
   );
 
   return (
     <PageLayout
-      title="Restocking"
-      subtitle="Monitor restock requests"
+      title="Batches"
+      subtitle="Create batches and expose them for vendors to request"
       search={search}
       setSearch={setSearch}
     >
+      {message && (
+        <div className="alert alert-warning">
+          <AlertTriangle size={16} />
+          {message}
+        </div>
+      )}
+
+      <div className="form-card">
+        <div className="form-card-title">
+          <h3>New Batch</h3>
+          <p>New batches are exposed to vendors right away; hide one from the table. Expiry and the low-stock alert (20% of volume) are set automatically.</p>
+        </div>
+
+        <div className="form-grid">
+          <FormField label="Product">
+            <select value={form.product_id} onChange={(e) => update("product_id", e.target.value)}>
+              <option value="">Select product</option>
+              {products.map((product) => (
+                <option key={product.product_id} value={product.product_id}>
+                  {product.product_name} ({product.product_id})
+                </option>
+              ))}
+            </select>
+          </FormField>
+
+          <FormField label="Volume (kg)">
+            <input type="number" min="0" value={form.volume_kg}
+              onChange={(e) => update("volume_kg", e.target.value)} />
+          </FormField>
+
+          <FormField label="Manufactured at">
+            <input type="datetime-local" max={localNow()} value={form.manufactured_at}
+              onChange={(e) => update("manufactured_at", e.target.value)} />
+          </FormField>
+        </div>
+
+        <div className="form-actions">
+          <button className="primary-btn" onClick={createBatch}>
+            <Boxes size={15} />
+            Create Batch
+          </button>
+        </div>
+      </div>
+
       <div className="table-card">
         <div className="table-wrapper">
           <table>
             <thead>
               <tr>
-                <th>Request ID</th>
-                <th>Vendor</th>
+                <th>Batch</th>
                 <th>Product</th>
-                <th>Quantity</th>
+                <th>Vendor</th>
+                <th>Remaining</th>
+                <th>Manufactured</th>
                 <th>Status</th>
+                <th>Visibility</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((item, index) => {
-                const value = getValue(item, ["status"], "pending");
-
+              {filtered.map((batch, index) => {
+                const low = batch.remaining_kg <= batch.threshold_kg;
                 return (
-                  <tr key={item._id || item.id || index}>
+                  <tr key={batch._id || index}>
+                    <td><strong>{batch.batch_id}</strong></td>
+                    <td>{getValue(batch, ["product_name", "product_id"], "-")}</td>
+                    <td>{batch.vendor_id || "-"}</td>
                     <td>
-                      {getValue(item, ["_id", "id", "request_id"], "-")}
-                    </td>
-                    <td>{getValue(item, ["vendor_id", "vendorId"], "-")}</td>
-                    <td>{getValue(item, ["product_id", "productId"], "-")}</td>
-                    <td>{getValue(item, ["quantity"], "-")}</td>
-                    <td>
-                      <span className={statusClass(value)}>
-                        {formatStatus(value)}
+                      <span className={low && batch.vendor_id ? "status status-danger" : ""}>
+                        {batch.remaining_kg} / {batch.volume_kg} kg
                       </span>
+                    </td>
+                    <td>{formatDate(getValue(batch, ["manufactured_at", "mfgTimestamp", "created_at"], ""))}</td>
+                    <td>
+                      <span className={statusClass(batch.status === "available" ? "pending" : batch.status)}>
+                        {formatStatus(batch.status)}
+                      </span>
+                    </td>
+                    <td>
+                      {batch.status === "available" ? (
+                        <button className="secondary-btn small-btn" onClick={() => toggleExposed(batch)}>
+                          {batch.exposed === false ? <EyeOff size={13} /> : <Eye size={13} />}
+                          {batch.exposed === false ? "Hidden" : "Exposed"}
+                        </button>
+                      ) : (
+                        "-"
+                      )}
                     </td>
                   </tr>
                 );
@@ -943,9 +852,7 @@ function Restocking({ restocks, search, setSearch }) {
             </tbody>
           </table>
 
-          {filtered.length === 0 && (
-            <div className="empty-state">No restock requests found.</div>
-          )}
+          {filtered.length === 0 && <div className="empty-state">No batches found.</div>}
         </div>
       </div>
     </PageLayout>
@@ -998,6 +905,36 @@ function Activity({ logs, search, setSearch }) {
   );
 }
 
+function VendorSelect({ vendors, vendorId, onChange, onRefresh, loading, label, description, refreshLabel }) {
+  return (
+    <div className="ai-selector-card">
+      <div>
+        <div className="ai-selector-title">{label}</div>
+        <div className="ai-selector-description">{description}</div>
+      </div>
+
+      <div className="ai-selector-controls">
+        <select className="ai-vendor-select" value={vendorId} onChange={(e) => onChange(e.target.value)}>
+          <option value="">Select vendor</option>
+          {vendors.map((vendor, index) => {
+            const id = getValue(vendor, ["vendor_id", "vendorId", "id", "_id"], "");
+            return (
+              <option key={id || index} value={id}>
+                {getValue(vendor, ["shop_name", "name"], "Vendor")} - {id}
+              </option>
+            );
+          })}
+        </select>
+
+        <button className="primary-btn" onClick={onRefresh} disabled={!vendorId || loading}>
+          <RefreshCw size={14} className={loading ? "spin" : ""} />
+          {refreshLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DemandForecast({ vendors }) {
   const [vendorId, setVendorId] = useState("");
   const [forecast, setForecast] = useState([]);
@@ -1014,7 +951,8 @@ function DemandForecast({ vendors }) {
       setLoading(true);
       setMessage("");
       const data = await request(`/vendors/${id}/demand-forecast`);
-      setForecast(Array.isArray(data) ? data : data.forecast || []);
+      setForecast(data.forecast || []);
+      setMessage(data.error || data.message || "");
     } catch (error) {
       setForecast([]);
       setMessage(error.message || "Unable to load demand forecast.");
@@ -1023,29 +961,16 @@ function DemandForecast({ vendors }) {
     }
   };
 
-  const totals = useMemo(() => {
-    return forecast.reduce(
-      (acc, item) => {
-        const demand = Number(item.predicted_demand || 0);
-        const safety = Number(item.safety_stock || 0);
-        const recStock = Number(item.recommended_stock || demand + safety);
-        const stock = Number(item.current_stock || 0);
-        acc.predicted += demand;
-        acc.recStock += recStock;
-        acc.stock += stock;
-        if (Math.abs(stock - recStock) >= 0.1) acc.mismatches += 1;
-        return acc;
-      },
-      { predicted: 0, recStock: 0, stock: 0, mismatches: 0 }
-    );
-  }, [forecast]);
-
-  const chartData = forecast.map((item) => ({
-    product: String(item.product_name || "Product").slice(0, 16),
-    predicted: Number(item.predicted_demand || 0),
-    recStock: Number(item.recommended_stock || (Number(item.predicted_demand || 0) + Number(item.safety_stock || 0))),
-    stock: Number(item.current_stock || 0)
-  }));
+  const totals = forecast.reduce(
+    (acc, item) => {
+      acc.predicted += Number(item.predicted_demand || 0);
+      acc.recStock += Number(item.recommended_stock || 0);
+      acc.stock += Number(item.current_stock || 0);
+      acc.refill += Number(item.refill_quantity || 0);
+      return acc;
+    },
+    { predicted: 0, recStock: 0, stock: 0, refill: 0 }
+  );
 
   return (
     <div className="ai-page">
@@ -1056,54 +981,24 @@ function DemandForecast({ vendors }) {
           </div>
           <div>
             <h1>Demand Forecast</h1>
-            <p>AI-powered vendor demand prediction and recommended ordering</p>
+            <p>Predicted demand for the products each vendor holds, and the refill they need</p>
           </div>
         </div>
       </div>
 
-      <div className="ai-selector-card">
-        <div>
-          <div className="ai-selector-title">Select Vendor</div>
-          <div className="ai-selector-description">
-            Fetch the latest demand prediction for one vendor.
-          </div>
-        </div>
-
-        <div className="ai-selector-controls">
-          <select
-            className="ai-vendor-select"
-            value={vendorId}
-            onChange={(e) => {
-              setVendorId(e.target.value);
-              loadForecast(e.target.value);
-            }}
-          >
-            <option value="">Select vendor</option>
-            {vendors.map((vendor, index) => {
-              const id = getValue(
-                vendor,
-                ["vendor_id", "vendorId", "id", "_id"],
-                ""
-              );
-
-              return (
-                <option key={id || index} value={id}>
-                  {getValue(vendor, ["shop_name", "name"], "Vendor")} - {id}
-                </option>
-              );
-            })}
-          </select>
-
-          <button
-            className="primary-btn"
-            onClick={() => loadForecast()}
-            disabled={!vendorId || loading}
-          >
-            <RefreshCw size={14} className={loading ? "spin" : ""} />
-            Refresh Forecast
-          </button>
-        </div>
-      </div>
+      <VendorSelect
+        vendors={vendors}
+        vendorId={vendorId}
+        onChange={(id) => {
+          setVendorId(id);
+          loadForecast(id);
+        }}
+        onRefresh={() => loadForecast()}
+        loading={loading}
+        label="Select Vendor"
+        description="Only products with batches assigned to the vendor are forecast."
+        refreshLabel="Refresh Forecast"
+      />
 
       {message && (
         <div className="alert alert-warning">
@@ -1113,76 +1008,33 @@ function DemandForecast({ vendors }) {
       )}
 
       <div className="ai-stats-grid">
-        <AIStat
-          icon={TrendingUp}
-          title="Predicted Demand"
-          value={totals.predicted.toFixed(1)}
-          text="units"
-        />
-        <AIStat
-          icon={ShoppingCart}
-          title="Rec. Stock to Hold"
-          value={totals.recStock.toFixed(1)}
-          text="demand + safety"
-        />
-        <AIStat
-          icon={Package}
-          title="Current Inventory"
-          value={totals.stock.toFixed(1)}
-          text="in stock"
-        />
+        <AIStat icon={TrendingUp} title="Predicted Demand" value={totals.predicted.toFixed(1)} text="kg" />
+        <AIStat icon={ShoppingCart} title="Rec. Stock" value={totals.recStock.toFixed(1)} text="demand + safety" />
+        <AIStat icon={Package} title="Current Stock" value={totals.stock.toFixed(1)} text="kg in batches" />
         <AIStat
           icon={AlertTriangle}
-          title="Stock Mismatches"
-          value={totals.mismatches}
-          text="products"
-          danger={totals.mismatches > 0}
+          title="Refill Needed"
+          value={totals.refill.toFixed(1)}
+          text="kg"
+          danger={totals.refill > 0}
         />
       </div>
 
       {!vendorId ? (
-        <AIEmpty
-          icon={TrendingUp}
-          title="Select a vendor"
-          text="Choose a vendor above to view the demand forecast."
-        />
+        <AIEmpty icon={TrendingUp} title="Select a vendor" text="Choose a vendor above to view the demand forecast." />
       ) : forecast.length === 0 && !loading ? (
         <AIEmpty
           icon={TrendingUp}
-          title="No forecast data"
-          text="The backend did not return forecast records for this vendor."
+          title="No batches assigned"
+          text="This vendor holds no batches, so there is nothing to forecast."
         />
       ) : (
         <>
-          <div className="ai-chart-card">
-            <div className="ai-card-header">
-              <div>
-                <h3>Demand vs Recommended Stock vs Inventory</h3>
-                <p>Visual comparison for vendor stock holding</p>
-              </div>
-            </div>
-
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height={330}>
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="product" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  <Bar dataKey="predicted" name="Predicted Demand" fill="#d97706" />
-                  <Bar dataKey="recStock" name="Rec. Stock to Hold" fill="#2563eb" />
-                  <Bar dataKey="stock" name="Current Inventory" fill="#475569" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
           <div className="ai-table-card">
             <div className="ai-card-header">
               <div>
-                <h3>Vendor Demand & Recommended Stock Balance</h3>
-                <p>Demand, safety buffer, recommended stock to hold, and stock mismatch</p>
+                <h3>Demand &amp; Refill</h3>
+                <p>Stock ≥ demand: no restock. Stock &lt; demand: refill = deficit + safety stock.</p>
               </div>
             </div>
 
@@ -1193,62 +1045,50 @@ function DemandForecast({ vendors }) {
                     <th>Product</th>
                     <th>Demand</th>
                     <th>Safety Stock</th>
-                    <th>Rec. Stock to Hold</th>
-                    <th>Current Inventory</th>
-                    <th>Stock Mismatch</th>
+                    <th>Rec. Stock</th>
+                    <th>Current Stock</th>
+                    <th>Deficit</th>
+                    <th>Refill</th>
                     <th>Status</th>
+                    <th>Active Batches</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {forecast.map((item, index) => {
-                    const demand = Number(item.predicted_demand || 0);
-                    const safety = Number(item.safety_stock || 0);
-                    const recStock = Number(item.recommended_stock || demand + safety);
-                    const stock = Number(item.current_stock || 0);
-                    const diff = Number((stock - recStock).toFixed(1));
-                    const hasMismatch = Math.abs(diff) >= 0.1;
-                    const isShortage = diff < -0.1;
-
-                    return (
-                      <tr key={item.product_name || index}>
-                        <td><strong>{item.product_name || "-"}</strong></td>
-                        <td>{demand.toFixed(1)}</td>
-                        <td>{safety.toFixed(1)}</td>
-                        <td><strong>{recStock.toFixed(1)}</strong></td>
-                        <td>{stock.toFixed(1)}</td>
-                        <td>
-                          {hasMismatch ? (
+                  {forecast.map((item, index) => (
+                    <tr key={item.product_name || index}>
+                      <td>
+                        <strong>{item.product_name || "-"}</strong>
+                        {item.has_sales_history === false && (
+                          <div className="ai-selector-description">cold start (no sales history)</div>
+                        )}
+                      </td>
+                      <td>{Number(item.predicted_demand).toFixed(1)}</td>
+                      <td>{Number(item.safety_stock).toFixed(1)}</td>
+                      <td><strong>{Number(item.recommended_stock).toFixed(1)}</strong></td>
+                      <td>{Number(item.current_stock).toFixed(1)}</td>
+                      <td>{Number(item.deficit).toFixed(1)}</td>
+                      <td><strong>{Number(item.refill_quantity).toFixed(1)}</strong></td>
+                      <td>
+                        <span className={item.restock_needed ? "status status-danger" : "status status-success"}>
+                          {item.restock_needed ? "Restock Needed" : "No Restock Needed"}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="batch-chips">
+                          {(item.batches || []).map((batch) => (
                             <span
-                              className={
-                                isShortage
-                                  ? "status status-danger"
-                                  : "status status-warning"
-                              }
+                              key={batch.batch_id}
+                              className="batch-chip"
+                              title={`${batch.batch_id} · ${batch.remaining_kg} kg · ${formatStatus(batch.status)} · ${formatDate(batch.received_at)}`}
                             >
-                              {isShortage
-                                ? `Mismatch: -${Math.abs(diff)} (Shortage)`
-                                : `Mismatch: +${diff} (Surplus)`}
+                              <strong>{batch.batch_id}</strong>
+                              <span>{batch.remaining_kg} kg · {formatDate(batch.received_at)}</span>
                             </span>
-                          ) : (
-                            <span className="status status-success">
-                              Matched (Optimal)
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <span
-                            className={
-                              isShortage
-                                ? "status status-warning"
-                                : "status status-success"
-                            }
-                          >
-                            {isShortage ? `Restock ${Math.abs(diff)} units` : "Stock Healthy"}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -1259,15 +1099,23 @@ function DemandForecast({ vendors }) {
   );
 }
 
+function RiskBar({ score, label }) {
+  return (
+    <div className="risk-bar" title={`${score}%`}>
+      <div className="risk-bar-fill" style={{ width: `${Math.min(100, Math.max(0, score))}%`, background: riskColor(label) }} />
+    </div>
+  );
+}
+
 function SpoilageRisk({ vendors }) {
   const [vendorId, setVendorId] = useState("");
-  const [evaluations, setEvaluations] = useState([]);
+  const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
 
   const loadRisk = async (id = vendorId) => {
     if (!id) {
-      setEvaluations([]);
+      setReport(null);
       return;
     }
 
@@ -1275,28 +1123,20 @@ function SpoilageRisk({ vendors }) {
       setLoading(true);
       setMessage("");
       const data = await request(`/vendors/${id}/spoilage-risk`);
-      setEvaluations(data.evaluations || []);
-      if (data.message) setMessage(data.message);
+      setReport(data);
+      setMessage(data.error || data.message || "");
     } catch (error) {
-      setEvaluations([]);
+      setReport(null);
       setMessage(error.message || "Unable to load spoilage risk.");
     } finally {
       setLoading(false);
     }
   };
 
-  const counts = useMemo(() => {
-    return evaluations.reduce(
-      (acc, item) => {
-        const risk = String(item.risk_label || "").toLowerCase();
-        if (risk === "high") acc.high += 1;
-        else if (risk === "medium") acc.medium += 1;
-        else acc.normal += 1;
-        return acc;
-      },
-      { high: 0, medium: 0, normal: 0 }
-    );
-  }, [evaluations]);
+  const evaluations = report?.evaluations || [];
+  const summary = report?.summary || { high: 0, medium: 0, low: 0 };
+  const aggregate = report?.aggregate_risk_score;
+  const aggregateLabel = report?.aggregate_risk_label;
 
   return (
     <div className="ai-page">
@@ -1307,54 +1147,24 @@ function SpoilageRisk({ vendors }) {
           </div>
           <div>
             <h1>Spoilage Risk</h1>
-            <p>AI-based batch risk evaluation and recommended actions</p>
+            <p>Model risk score (0–100) for every batch a vendor currently holds</p>
           </div>
         </div>
       </div>
 
-      <div className="ai-selector-card">
-        <div>
-          <div className="ai-selector-title">Select Vendor</div>
-          <div className="ai-selector-description">
-            Analyze active batches for spoilage risk.
-          </div>
-        </div>
-
-        <div className="ai-selector-controls">
-          <select
-            className="ai-vendor-select"
-            value={vendorId}
-            onChange={(e) => {
-              setVendorId(e.target.value);
-              loadRisk(e.target.value);
-            }}
-          >
-            <option value="">Select vendor</option>
-            {vendors.map((vendor, index) => {
-              const id = getValue(
-                vendor,
-                ["vendor_id", "vendorId", "id", "_id"],
-                ""
-              );
-
-              return (
-                <option key={id || index} value={id}>
-                  {getValue(vendor, ["shop_name", "name"], "Vendor")} - {id}
-                </option>
-              );
-            })}
-          </select>
-
-          <button
-            className="primary-btn"
-            onClick={() => loadRisk()}
-            disabled={!vendorId || loading}
-          >
-            <RefreshCw size={14} className={loading ? "spin" : ""} />
-            Refresh Risk
-          </button>
-        </div>
-      </div>
+      <VendorSelect
+        vendors={vendors}
+        vendorId={vendorId}
+        onChange={(id) => {
+          setVendorId(id);
+          loadRisk(id);
+        }}
+        onRefresh={() => loadRisk()}
+        loading={loading}
+        label="Select Vendor"
+        description="Archived, sold-out and expired-out batches are excluded."
+        refreshLabel="Refresh Risk"
+      />
 
       {message && (
         <div className="alert alert-warning">
@@ -1363,54 +1173,33 @@ function SpoilageRisk({ vendors }) {
         </div>
       )}
 
-      <div className="ai-stats-grid">
-        <AIStat
-          icon={ShieldAlert}
-          title="High Risk"
-          value={counts.high}
-          text="batches"
-          danger
-        />
-        <AIStat
-          icon={Thermometer}
-          title="Medium Risk"
-          value={counts.medium}
-          text="batches"
-        />
-        <AIStat
-          icon={CheckCircle2}
-          title="Normal"
-          value={counts.normal}
-          text="batches"
-        />
-        <AIStat
-          icon={Package}
-          title="Total Batches"
-          value={evaluations.length}
-          text="evaluated"
-        />
+      <div className="ai-stats-grid risk-kpis">
+        <div className="ai-stat-card aggregate-card" style={{ borderColor: riskColor(aggregateLabel) }}>
+          <div className="dashboard-stat-label">Vendor Aggregate Risk</div>
+          <div className="dashboard-stat-value">
+            <strong style={{ color: riskColor(aggregateLabel) }}>
+              {aggregate == null ? "-" : `${aggregate.toFixed(1)}%`}
+            </strong>
+            <span style={{ color: riskColor(aggregateLabel) }}>{aggregateLabel || "no batches"}</span>
+          </div>
+          <RiskBar score={aggregate || 0} label={aggregateLabel} />
+        </div>
+        <AIStat icon={ShieldAlert} title="High (>70%)" value={summary.high} text="batches" danger />
+        <AIStat icon={Thermometer} title="Medium (30–70%)" value={summary.medium} text="batches" />
+        <AIStat icon={CheckCircle2} title="Low (≤30%)" value={summary.low} text="batches" />
+        <AIStat icon={Package} title="Total Batches" value={evaluations.length} text="held" />
       </div>
 
       {!vendorId ? (
-        <AIEmpty
-          icon={ShieldAlert}
-          title="Select a vendor"
-          text="Choose a vendor above to evaluate spoilage risk."
-          danger
-        />
+        <AIEmpty icon={ShieldAlert} title="Select a vendor" text="Choose a vendor above to evaluate spoilage risk." danger />
       ) : evaluations.length === 0 && !loading ? (
-        <AIEmpty
-          icon={ShieldAlert}
-          title="No active batches"
-          text="The backend did not return active batches for this vendor."
-          danger
-        />
+        <AIEmpty icon={ShieldAlert} title="No batches assigned" text="This vendor holds no batches." danger />
       ) : (
         <div className="ai-table-card">
           <div className="ai-card-header">
             <div>
               <h3>Batch Risk Evaluation</h3>
-              <p>Risk probabilities and recommended action</p>
+              <p>Score = P(High)×100 + P(Medium)×50 · aggregate weighted by kg left</p>
             </div>
           </div>
 
@@ -1420,37 +1209,32 @@ function SpoilageRisk({ vendors }) {
                 <tr>
                   <th>Batch ID</th>
                   <th>Product</th>
-                  <th>Risk Label</th>
+                  <th>Remaining</th>
                   <th>Risk Score</th>
+                  <th>Risk Label</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {evaluations.map((item, index) => {
-                  const risk = String(item.risk_label || "Low");
-                  const probabilities = item.probabilities || {};
-                  const score =
-                    item.risk_score ||
-                    formatProbability(
-                      item.risk_score_value || probabilities[risk] || 0
-                    );
-
-                  return (
-                    <tr key={item.batch_id || index}>
-                      <td>{item.batch_id || "-"}</td>
-                      <td><strong>{item.product_name || "-"}</strong></td>
-                      <td>
-                        <span className={statusClass(risk)}>
-                          {risk} Risk
-                        </span>
-                      </td>
-                      <td>
-                        <strong style={{ fontSize: "14px" }}>
-                          {score}
-                        </strong>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {evaluations.map((item, index) => (
+                  <tr key={item.batch_id || index}>
+                    <td>{item.batch_id}</td>
+                    <td><strong>{item.product_name}</strong></td>
+                    <td>{item.remaining_kg} kg</td>
+                    <td>
+                      <div className="risk-score-cell">
+                        <strong>{Number(item.risk_score).toFixed(1)}%</strong>
+                        <RiskBar score={item.risk_score} label={item.risk_label} />
+                      </div>
+                    </td>
+                    <td>
+                      <span className={statusClass(item.risk_label === "Low" ? "active" : item.risk_label)}>
+                        {item.risk_label} Risk
+                      </span>
+                    </td>
+                    <td>{item.action}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -1458,11 +1242,6 @@ function SpoilageRisk({ vendors }) {
       )}
     </div>
   );
-}
-
-function formatProbability(value) {
-  const number = Number(value || 0);
-  return `${(number * 100).toFixed(1)}%`;
 }
 
 function AIStat({ icon: Icon, title, value, text, danger = false }) {
@@ -1488,421 +1267,6 @@ function AIEmpty({ icon: Icon, title, text, danger = false }) {
       </div>
       <h3>{title}</h3>
       <p>{text}</p>
-    </div>
-  );
-}
-
-function Customers() {
-  const [mode, setMode] = useState("register");
-  const [showPassword, setShowPassword] = useState(false);
-
-  const [registerForm, setRegisterForm] = useState({
-    name: "",
-    email: "",
-    password: "",
-    phone: "",
-    latitude: "",
-    longitude: "",
-    address: ""
-  });
-
-  const [loginForm, setLoginForm] = useState({
-    login: "",
-    password: "",
-    latitude: "",
-    longitude: "",
-    address: ""
-  });
-
-  const [message, setMessage] = useState("");
-  const [messageType, setMessageType] = useState("");
-  const [customer, setCustomer] = useState(null);
-  const [loading, setLoading] = useState(false);
-
-  const updateRegister = (field, value) => {
-    setRegisterForm((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const updateLogin = (field, value) => {
-    setLoginForm((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const register = async () => {
-    if (
-      !registerForm.name.trim() ||
-      !registerForm.email.trim() ||
-      !registerForm.password
-    ) {
-      setMessageType("error");
-      setMessage("Name, email, and password are required.");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setMessage("");
-
-      const payload = {
-        name: registerForm.name,
-        email: registerForm.email,
-        password: registerForm.password,
-        phone: registerForm.phone,
-        location: {
-          latitude: registerForm.latitude
-            ? Number(registerForm.latitude)
-            : null,
-          longitude: registerForm.longitude
-            ? Number(registerForm.longitude)
-            : null,
-          address: registerForm.address
-        }
-      };
-
-      const data = await request("/customers/register", {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-
-      setCustomer(data.customer || null);
-      setMessageType("success");
-      setMessage(data.message || "Customer registered successfully.");
-
-      setRegisterForm({
-        name: "",
-        email: "",
-        password: "",
-        phone: "",
-        latitude: "",
-        longitude: "",
-        address: ""
-      });
-    } catch (error) {
-      setMessageType("error");
-      setMessage(error.message || "Customer registration failed.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const login = async () => {
-    if (!loginForm.login.trim() || !loginForm.password) {
-      setMessageType("error");
-      setMessage("Login email/phone and password are required.");
-      return;
-    }
-
-    try {
-      setLoading(true);
-      setMessage("");
-
-      const locationProvided =
-        loginForm.latitude || loginForm.longitude || loginForm.address;
-
-      const payload = {
-        login: loginForm.login,
-        password: loginForm.password
-      };
-
-      if (locationProvided) {
-        payload.location = {
-          latitude: loginForm.latitude
-            ? Number(loginForm.latitude)
-            : null,
-          longitude: loginForm.longitude
-            ? Number(loginForm.longitude)
-            : null,
-          address: loginForm.address
-        };
-      }
-
-      const data = await request("/customers/login", {
-        method: "POST",
-        body: JSON.stringify(payload)
-      });
-
-      setCustomer(data.customer || null);
-      setMessageType("success");
-      setMessage(data.message || "Customer login successful.");
-    } catch (error) {
-      setCustomer(null);
-      setMessageType("error");
-      setMessage(error.message || "Customer login failed.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="customer-page">
-      <div className="page-heading-large">
-        <div className="customer-title-row">
-          <div className="customer-page-icon">
-            <Users size={22} />
-          </div>
-          <div>
-            <h1>Customer Accounts</h1>
-            <p>Register and test customer authentication using the new backend APIs</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="customer-layout">
-        <section className="customer-card">
-          <div className="customer-tabs">
-            <button
-              className={mode === "register" ? "customer-tab active" : "customer-tab"}
-              onClick={() => {
-                setMode("register");
-                setMessage("");
-              }}
-            >
-              <UserPlus size={15} />
-              Register
-            </button>
-
-            <button
-              className={mode === "login" ? "customer-tab active" : "customer-tab"}
-              onClick={() => {
-                setMode("login");
-                setMessage("");
-              }}
-            >
-              <LogIn size={15} />
-              Login
-            </button>
-          </div>
-
-          {message && (
-            <div
-              className={`customer-message ${
-                messageType === "success" ? "success" : "error"
-              }`}
-            >
-              {message}
-            </div>
-          )}
-
-          {mode === "register" ? (
-            <div className="customer-form">
-              <div className="customer-form-header">
-                <h3>Create Customer Account</h3>
-                <p>Uses POST /customers/register</p>
-              </div>
-
-              <div className="form-grid customer-grid">
-                <FormField label="Name *">
-                  <input
-                    value={registerForm.name}
-                    onChange={(e) => updateRegister("name", e.target.value)}
-                    placeholder="Customer name"
-                  />
-                </FormField>
-
-                <FormField label="Email *">
-                  <input
-                    type="email"
-                    value={registerForm.email}
-                    onChange={(e) => updateRegister("email", e.target.value)}
-                    placeholder="customer@example.com"
-                  />
-                </FormField>
-
-                <FormField label="Password *">
-                  <PasswordInput
-                    value={registerForm.password}
-                    show={showPassword}
-                    onChange={(value) => updateRegister("password", value)}
-                    onToggle={() => setShowPassword((prev) => !prev)}
-                  />
-                </FormField>
-
-                <FormField label="Phone">
-                  <input
-                    value={registerForm.phone}
-                    onChange={(e) => updateRegister("phone", e.target.value)}
-                    placeholder="Phone number"
-                  />
-                </FormField>
-
-                <FormField label="Latitude">
-                  <input
-                    type="number"
-                    value={registerForm.latitude}
-                    onChange={(e) => updateRegister("latitude", e.target.value)}
-                    placeholder="13.0827"
-                  />
-                </FormField>
-
-                <FormField label="Longitude">
-                  <input
-                    type="number"
-                    value={registerForm.longitude}
-                    onChange={(e) => updateRegister("longitude", e.target.value)}
-                    placeholder="80.2707"
-                  />
-                </FormField>
-
-                <FormField label="Address" wide>
-                  <input
-                    value={registerForm.address}
-                    onChange={(e) => updateRegister("address", e.target.value)}
-                    placeholder="Customer address"
-                  />
-                </FormField>
-              </div>
-
-              <div className="customer-form-footer">
-                <span>
-                  <MapPin size={14} />
-                  Location is stored with the customer account.
-                </span>
-
-                <button
-                  className="primary-btn"
-                  onClick={register}
-                  disabled={loading}
-                >
-                  <UserPlus size={15} />
-                  {loading ? "Registering..." : "Register Customer"}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="customer-form">
-              <div className="customer-form-header">
-                <h3>Customer Login</h3>
-                <p>Uses POST /customers/login</p>
-              </div>
-
-              <div className="form-grid customer-grid">
-                <FormField label="Email or Phone *">
-                  <input
-                    value={loginForm.login}
-                    onChange={(e) => updateLogin("login", e.target.value)}
-                    placeholder="Email or phone"
-                  />
-                </FormField>
-
-                <FormField label="Password *">
-                  <PasswordInput
-                    value={loginForm.password}
-                    show={showPassword}
-                    onChange={(value) => updateLogin("password", value)}
-                    onToggle={() => setShowPassword((prev) => !prev)}
-                  />
-                </FormField>
-
-                <FormField label="Latitude">
-                  <input
-                    type="number"
-                    value={loginForm.latitude}
-                    onChange={(e) => updateLogin("latitude", e.target.value)}
-                    placeholder="Optional"
-                  />
-                </FormField>
-
-                <FormField label="Longitude">
-                  <input
-                    type="number"
-                    value={loginForm.longitude}
-                    onChange={(e) => updateLogin("longitude", e.target.value)}
-                    placeholder="Optional"
-                  />
-                </FormField>
-
-                <FormField label="Address" wide>
-                  <input
-                    value={loginForm.address}
-                    onChange={(e) => updateLogin("address", e.target.value)}
-                    placeholder="Optional updated address"
-                  />
-                </FormField>
-              </div>
-
-              <div className="customer-form-footer">
-                <span>
-                  <MapPin size={14} />
-                  Sending a location updates the customer's saved location.
-                </span>
-
-                <button
-                  className="primary-btn"
-                  onClick={login}
-                  disabled={loading}
-                >
-                  <LogIn size={15} />
-                  {loading ? "Logging in..." : "Login Customer"}
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
-
-        <section className="customer-result-card">
-          <div className="customer-result-header">
-            <div className="customer-result-icon">
-              <Users size={18} />
-            </div>
-            <div>
-              <h3>Account Result</h3>
-              <p>Latest API response</p>
-            </div>
-          </div>
-
-          {customer ? (
-            <div className="customer-result">
-              <div className="result-status">
-                <CheckCircle2 size={17} />
-                Customer authenticated
-              </div>
-
-              <ResultRow label="Customer ID" value={customer.customer_id || customer._id} />
-              <ResultRow label="Name" value={customer.name} />
-              <ResultRow label="Email" value={customer.email} />
-              <ResultRow label="Phone" value={customer.phone || "-"} />
-
-              <div className="result-location">
-                <div className="result-location-title">
-                  <MapPin size={14} />
-                  Location
-                </div>
-                <pre>{JSON.stringify(customer.location || {}, null, 2)}</pre>
-              </div>
-            </div>
-          ) : (
-            <div className="customer-result-empty">
-              <Users size={25} />
-              <h3>No customer response yet</h3>
-              <p>Register or login to see the backend response here.</p>
-            </div>
-          )}
-        </section>
-      </div>
-    </div>
-  );
-}
-
-function PasswordInput({ value, show, onChange, onToggle }) {
-  return (
-    <div className="password-field">
-      <input
-        type={show ? "text" : "password"}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Password"
-      />
-      <button type="button" onClick={onToggle}>
-        {show ? <EyeOff size={15} /> : <Eye size={15} />}
-      </button>
-    </div>
-  );
-}
-
-function ResultRow({ label, value }) {
-  return (
-    <div className="result-row">
-      <span>{label}</span>
-      <strong>{value || "-"}</strong>
     </div>
   );
 }
@@ -1948,16 +1312,16 @@ function App() {
   const [products, setProducts] = useState([]);
   const [inventory, setInventory] = useState([]);
   const [demands, setDemands] = useState([]);
-  const [restocks, setRestocks] = useState([]);
+  const [batches, setBatches] = useState([]);
   const [logs, setLogs] = useState([]);
 
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
 
+  // Only the first load shows the full-screen loader; refreshes keep the page
+  // (and its success/error message) mounted.
   const loadData = async () => {
     try {
-      setLoading(true);
-
       const vendorData = await request("/vendors");
       const vendorList = Array.isArray(vendorData)
         ? vendorData
@@ -1965,24 +1329,19 @@ function App() {
 
       setVendors(vendorList);
 
-      const productResults = await Promise.all(
-        vendorList.map(async (vendor) => {
-          const id = getValue(
-            vendor,
-            ["vendor_id", "vendorId", "id", "_id"],
-            ""
-          );
+      try {
+        const data = await request("/products");
+        setProducts(data.products || []);
+      } catch {
+        setProducts([]);
+      }
 
-          if (!id) return [];
-
-          try {
-            const data = await request(`/vendors/${id}/products`);
-            return Array.isArray(data) ? data : data.products || [];
-          } catch {
-            return [];
-          }
-        })
-      );
+      try {
+        const data = await request("/batches");
+        setBatches(data.batches || []);
+      } catch {
+        setBatches([]);
+      }
 
       const inventoryResults = await Promise.all(
         vendorList.map(async (vendor) => {
@@ -2003,18 +1362,16 @@ function App() {
         })
       );
 
-      setProducts(productResults.flat());
       setInventory(inventoryResults.flat());
 
       try {
         const data = await request("/restock-requests");
-        setRestocks(
-          Array.isArray(data)
-            ? data
-            : data.restock_requests || data.requests || []
-        );
+        const list = Array.isArray(data)
+          ? data
+          : data.restock_requests || data.requests || [];
+        setDemands(list);
       } catch {
-        setRestocks([]);
+        setDemands([]);
       }
 
       try {
@@ -2024,46 +1381,6 @@ function App() {
         setLogs([]);
       }
 
-      // The backend exposes restock requests for demands. The older
-      // GET /vendors/{id}/demands route is not guaranteed to exist.
-      const demandResults = await Promise.all(
-        vendorList.map(async (vendor) => {
-          const id = getValue(
-            vendor,
-            ["vendor_id", "vendorId", "id", "_id"],
-            ""
-          );
-
-          if (!id) return [];
-
-          try {
-            const data = await request(`/restock-requests?vendor_id=${id}`);
-            return Array.isArray(data)
-              ? data
-              : data.restock_requests || [];
-          } catch {
-            return [];
-          }
-        })
-      );
-
-      const uniqueDemands = [];
-      const seen = new Set();
-
-      demandResults.flat().forEach((demand) => {
-        const id = getValue(
-          demand,
-          ["_id", "id", "demand_id", "request_id"],
-          JSON.stringify(demand)
-        );
-
-        if (!seen.has(String(id))) {
-          seen.add(String(id));
-          uniqueDemands.push(demand);
-        }
-      });
-
-      setDemands(uniqueDemands);
     } catch (error) {
       console.error(error);
     } finally {
@@ -2083,13 +1400,11 @@ function App() {
     const titles = {
       dashboard: "Dashboard",
       vendors: "Vendors",
-      products: "Products",
+      batches: "Batches",
       inventory: "Inventory",
-      demands: "Demands",
-      restocking: "Restocking",
+      demands: "Batch Requests",
       forecast: "Demand Forecast",
       spoilage: "Spoilage Risk",
-      customers: "Customer Accounts",
       activity: "Activity"
     };
 
@@ -2127,7 +1442,6 @@ function App() {
               products={products}
               inventory={inventory}
               demands={demands}
-              restocks={restocks}
               logs={logs}
               setPage={setPage}
               refresh={loadData}
@@ -2142,11 +1456,13 @@ function App() {
             />
           )}
 
-          {page === "products" && (
-            <Products
+          {page === "batches" && (
+            <Batches
+              batches={batches}
               products={products}
               search={search}
               setSearch={setSearch}
+              refresh={loadData}
             />
           )}
 
@@ -2159,27 +1475,12 @@ function App() {
           )}
 
           {page === "demands" && (
-            <Demands
-              demands={demands}
-              vendors={vendors}
-              inventory={inventory}
-              refresh={loadData}
-            />
-          )}
-
-          {page === "restocking" && (
-            <Restocking
-              restocks={restocks}
-              search={search}
-              setSearch={setSearch}
-            />
+            <Demands demands={demands} refresh={loadData} />
           )}
 
           {page === "forecast" && <DemandForecast vendors={vendors} />}
 
           {page === "spoilage" && <SpoilageRisk vendors={vendors} />}
-
-          {page === "customers" && <Customers />}
 
           {page === "activity" && (
             <Activity

@@ -87,6 +87,11 @@ export const toneColors: Record<StatusTone, { fg: string; bg: string }> = {
   neutral: { fg: colors.neutral, bg: colors.neutralBg },
 };
 
+/** Spoilage score bands match the backend: <=30 Low, 30-70 Medium, >70 High. */
+export function riskColor(label: unknown): string {
+  return label === "High" ? colors.danger : label === "Medium" ? colors.warning : colors.success;
+}
+
 /** Same formatting as formatStatus() in the admin dashboard. */
 export function formatStatus(status: unknown): string {
   return String(status ?? "unknown")

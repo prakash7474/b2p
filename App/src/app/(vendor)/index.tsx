@@ -1,70 +1,38 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 
-import { Card, EmptyState, InfoRow, SectionTitle, StatCard, StatGrid } from "@/src/components/cards";
+import { Card, EmptyState, SectionTitle, StatCard, StatGrid } from "@/src/components/cards";
 import { LoadingScreen, Screen } from "@/src/components/layout";
 import { Button, SecondaryButton } from "@/src/components/controls";
-import { AlertBox, StatusPill } from "@/src/components/status";
-import {
-  api,
-  type ActivityLog,
-  type DemandRequest,
-  type InventoryItem,
-} from "@/src/lib/api";
+import { AlertBox, BarMeter, StatusPill } from "@/src/components/status";
+import { api, type ActivityLog, type RiskReport } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
-import { colors, fonts, pick, radius } from "@/src/theme";
+import { colors, fonts, radius, riskColor } from "@/src/theme";
 
-function isLowStock(item: InventoryItem): boolean {
-  const quantity = Number(pick(item, ["quantity", "stock", "available_quantity"], 0));
-  const threshold = Number(pick(item, ["reorder_level", "minimum_stock", "threshold"], 10));
-  return quantity <= threshold;
-}
-
-function formatCoord(value: unknown): string {
-  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(6) : "—";
-}
-
-function demandItems(demand: DemandRequest): string {
-  const items = demand.items ?? [];
-  if (items.length === 0) return "No items";
-  return items
-    .map((item) => `${item.product_name ?? item.product_id ?? "Item"} × ${item.quantity ?? 0}`)
-    .join(", ");
-}
-
-function shortId(id: unknown): string {
-  const value = String(id ?? "");
-  return value.length > 8 ? `#${value.slice(-6)}` : value ? `#${value}` : "#—";
-}
+type Notice = { type: "success" | "error"; text: string } | null;
 
 export default function DashboardScreen() {
-  const { vendor, vendorId, session, refreshVendor } = useAuth();
+  const { vendor, vendorId, session } = useAuth();
 
-  const [inventory, setInventory] = useState<InventoryItem[] | null>(null);
-  const [demands, setDemands] = useState<DemandRequest[] | null>(null);
+  const [report, setReport] = useState<RiskReport | null>(null);
   const [logs, setLogs] = useState<ActivityLog[] | null>(null);
-  const [error, setError] = useState("");
+  const [notice, setNotice] = useState<Notice>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [busyId, setBusyId] = useState("");
 
   const load = useCallback(async () => {
     if (!vendorId) return;
 
     try {
-      setError("");
-      const [inventoryData, demandData, logData] = await Promise.all([
-        api.getInventory(vendorId),
-        api.getDemands(vendorId),
-        api.getLogs(),
-      ]);
-
-      setInventory(inventoryData);
-      setDemands(demandData);
+      // The spoilage report lists every held batch with stock + risk, plus the shop aggregate.
+      const [riskData, logData] = await Promise.all([api.getRisk(vendorId), api.getLogs()]);
+      setReport(riskData);
       setLogs(logData);
     } catch (caught) {
-      setError(messageOf(caught));
+      setNotice({ type: "error", text: messageOf(caught) });
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -75,22 +43,35 @@ export default function DashboardScreen() {
     void load();
   }, [load]);
 
-  const refresh = useCallback(async () => {
+  const confirm = async (batchId: string) => {
+    try {
+      setBusyId(batchId);
+      setNotice(null);
+      const result = await api.receiveBatch(vendorId, batchId);
+      setNotice({ type: "success", text: result.message ?? "Assignment confirmed." });
+      await load();
+    } catch (caught) {
+      setNotice({ type: "error", text: messageOf(caught) });
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const refresh = () => {
     setRefreshing(true);
-    await Promise.all([load(), refreshVendor()]);
-  }, [load, refreshVendor]);
+    void load();
+  };
 
   if (loading) {
     return <LoadingScreen label="Loading dashboard..." />;
   }
 
-  const inventoryItems = inventory ?? [];
-  const demandList = demands ?? [];
-  const lowStock = inventoryItems.filter(isLowStock).length;
-  const pendingDemands = demandList.filter((demand) => {
-    const status = String(demand.status ?? "").toLowerCase();
-    return !["synchronized", "completed", "cancelled"].includes(status);
-  }).length;
+  const batches = report?.evaluations ?? [];
+  const toConfirm = batches.filter((batch) => batch.status === "assigned");
+  const currentStock = batches.reduce((sum, batch) => sum + Number(batch.remaining_kg ?? 0), 0);
+  const lowStock = batches.filter((batch) => batch.low_stock).length;
+  const aggregate = report?.aggregateScore;
+  const aggregateLabel = report?.aggregateLabel;
 
   const ownLogs = (logs ?? []).filter((log) => {
     const blob = JSON.stringify(log).toLowerCase();
@@ -99,135 +80,148 @@ export default function DashboardScreen() {
       .some((needle) => blob.includes(String(needle).toLowerCase()));
   });
 
-  const location = vendor?.location;
-
   return (
     <Screen
       title="Dashboard"
-      subtitle="Your shop at a glance"
+      subtitle={String(vendor?.shop_name ?? "Your shop at a glance")}
       action={
         <SecondaryButton
           label="Refresh"
           compact
           icon={<MaterialCommunityIcons name="refresh" size={13} color={colors.text} />}
-          onPress={() => void refresh()}
+          onPress={refresh}
           loading={refreshing}
         />
       }
       refreshing={refreshing}
-      onRefresh={() => void refresh()}
+      onRefresh={refresh}
     >
-      {error ? (
-        <AlertBox
-          type="error"
-          message={error}
-        />
-      ) : null}
+      {notice ? <AlertBox type={notice.type} message={notice.text} /> : null}
 
       <StatGrid>
         <StatCard
-          icon={(color) => <MaterialCommunityIcons name="package-variant" size={18} color={color} />}
-          label="Inventory Items"
-          value={inventoryItems.length}
-          sub="products mapped"
+          icon={(color) => <MaterialCommunityIcons name="scale" size={18} color={color} />}
+          label="Current Stock"
+          value={currentStock.toFixed(1)}
+          sub={`kg in ${batches.length} batches`}
+        />
+        <StatCard
+          icon={(color) => <MaterialCommunityIcons name="shield-alert-outline" size={18} color={color} />}
+          label="Overall Risk"
+          value={aggregate == null ? "—" : `${aggregate.toFixed(1)}%`}
+          sub={aggregateLabel ?? "no batches"}
+          tone={aggregateLabel === "High" ? "danger" : aggregateLabel === "Medium" ? "warning" : "success"}
+        />
+        <StatCard
+          icon={(color) => <MaterialCommunityIcons name="truck-check-outline" size={18} color={color} />}
+          label="To Confirm"
+          value={toConfirm.length}
+          sub="assigned batches"
+          tone={toConfirm.length > 0 ? "warning" : "success"}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="alert-decagram-outline" size={18} color={color} />}
           label="Low Stock"
           value={lowStock}
-          sub={lowStock > 0 ? "needs attention" : "all healthy"}
+          sub={lowStock > 0 ? "below threshold" : "all healthy"}
           tone={lowStock > 0 ? "danger" : "success"}
-        />
-        <StatCard
-          icon={(color) => <MaterialCommunityIcons name="clipboard-text-outline" size={18} color={color} />}
-          label="Pending Demands"
-          value={pendingDemands}
-          sub={`${demandList.length} total requests`}
-        />
-        <StatCard
-          icon={(color) => <MaterialCommunityIcons name="file-document-outline" size={18} color={color} />}
-          label="Activity"
-          value={ownLogs.length}
-          sub="logged events"
         />
       </StatGrid>
 
       <View>
-        <SectionTitle title="Shop Profile" subtitle="Registered details of your shop" />
+        <SectionTitle
+          title="Confirm Assigned Batches"
+          subtitle="The admin assigned these to you. Confirm to add them to your stock."
+        />
         <Card>
-          <View style={styles.profileHeader}>
-            <View style={styles.profileIcon}>
-              <MaterialCommunityIcons name="storefront-outline" size={18} color={colors.primary} />
-            </View>
-            <View style={styles.profileHeaderText}>
-              <Text style={styles.profileName}>
-                {String(vendor?.shop_name ?? "Shop name not set")}
-              </Text>
-              <Text style={styles.profileId}>{String(vendorId || "—")}</Text>
-            </View>
-            <StatusPill status={vendor?.status ?? "pending"} />
-          </View>
-
-          <InfoRow label="Email" value={String(vendor?.email ?? session?.email ?? "—")} />
-          <InfoRow label="Phone" value={String(vendor?.phone || "—")} />
-          <InfoRow label="Locality Tier" value={String(vendor?.locality_tier ?? "mixed")} />
-          <InfoRow
-            label="Latitude"
-            value={formatCoord(location?.latitude)}
-          />
-          <InfoRow
-            label="Longitude"
-            value={formatCoord(location?.longitude)}
-          />
-          <InfoRow
-            label="Address"
-            value={String(location?.address || "—")}
-            last
-          />
+          {toConfirm.length === 0 ? (
+            <EmptyState
+              icon={<MaterialCommunityIcons name="truck-check-outline" size={26} color={colors.muted} />}
+              title="Nothing to confirm"
+              text="Request batches from the Forecast tab; assigned ones appear here."
+            >
+              <Button
+                label="Request batches"
+                compact
+                onPress={() => router.push("/(vendor)/request-batches")}
+              />
+            </EmptyState>
+          ) : (
+            toConfirm.map((batch, index) => {
+              const id = String(batch.batch_id ?? index);
+              return (
+                <View key={id} style={[styles.row, index === toConfirm.length - 1 && styles.rowLast]}>
+                  <View style={styles.rowMain}>
+                    <Text style={styles.rowTitle}>{String(batch.product_name ?? "Batch")}</Text>
+                    <Text style={styles.rowMeta}>
+                      Batch {id} · {Number(batch.remaining_kg ?? 0)} kg
+                    </Text>
+                  </View>
+                  <Button
+                    label="Confirm"
+                    compact
+                    loading={busyId === id}
+                    icon={<MaterialCommunityIcons name="check-circle-outline" size={13} color="#fff" />}
+                    onPress={() => void confirm(id)}
+                  />
+                </View>
+              );
+            })
+          )}
         </Card>
       </View>
 
       <View>
-        <SectionTitle title="Demand Queue" subtitle="Your latest restock requests" />
-        <Card style={styles.cardPadding}>
-          {demandList.length === 0 ? (
-            <EmptyState
-              icon={
-                <MaterialCommunityIcons
-                  name="clipboard-text-outline"
-                  size={26}
-                  color={colors.muted}
-                />
-              }
-              title="No demand requests"
-              text="Raise a restock demand from the Demands tab."
-            >
-              <Button
-                label="Open demand center"
-                compact
-                onPress={() => router.push("/(vendor)/demands")}
-              />
-            </EmptyState>
-          ) : (
-            demandList.slice(0, 5).map((demand, index) => (
-              <View
-                key={String(demand._id ?? index)}
-                style={[
-                  styles.queueItem,
-                  index === Math.min(demandList.length, 5) - 1 && styles.queueItemLast,
-                ]}
-              >
-                <View style={styles.queueMain}>
-                  <Text style={styles.queueTitle}>
-                    Request {shortId(demand._id)} · {demandItems(demand)}
-                  </Text>
-                  <Text style={styles.queueSubtitle}>
-                    {String(demand.priority ?? "normal")} priority
-                  </Text>
-                </View>
-                <StatusPill status={demand.status ?? "pending"} />
+        <SectionTitle
+          title="Batch Risk"
+          subtitle="Spoilage risk of each batch · ≤30% Low, 30-70% Medium, >70% High"
+        />
+        <Card>
+          {aggregate != null ? (
+            <View style={[styles.row, styles.aggregateRow]}>
+              <View style={styles.rowMain}>
+                <Text style={styles.rowTitle}>Overall shop risk</Text>
+                <BarMeter percent={aggregate} color={riskColor(aggregateLabel)} />
               </View>
-            ))
+              <Text style={[styles.aggregateValue, { color: riskColor(aggregateLabel) }]}>
+                {aggregate.toFixed(1)}% {aggregateLabel}
+              </Text>
+            </View>
+          ) : null}
+
+          {batches.length === 0 ? (
+            <EmptyState
+              icon={<MaterialCommunityIcons name="shield-alert-outline" size={26} color={colors.muted} />}
+              title="No batches assigned"
+              text={report?.message ?? "Risk appears once batches are assigned to your shop."}
+            />
+          ) : (
+            batches.map((batch, index) => {
+              const label = String(batch.risk_label ?? "Low");
+              const score = Number(batch.risk_score ?? 0);
+              return (
+                <View
+                  key={String(batch.batch_id ?? index)}
+                  style={[styles.riskRow, index === batches.length - 1 && styles.rowLast]}
+                >
+                  <View style={styles.riskHeader}>
+                    <View style={styles.rowMain}>
+                      <Text style={styles.rowTitle}>{String(batch.product_name ?? "Batch")}</Text>
+                      <Text style={styles.rowMeta}>
+                        Batch {String(batch.batch_id)} · {Number(batch.remaining_kg ?? 0)} kg
+                      </Text>
+                    </View>
+                    <StatusPill status={label === "Low" ? "active" : label.toLowerCase()} label={`${label} Risk`} />
+                  </View>
+                  <BarMeter
+                    label="Risk score"
+                    value={`${score.toFixed(1)}%`}
+                    percent={score}
+                    color={riskColor(label)}
+                  />
+                </View>
+              );
+            })
           )}
         </Card>
       </View>
@@ -245,109 +239,76 @@ export default function DashboardScreen() {
             ownLogs.slice(0, 6).map((log, index) => (
               <View
                 key={String(log._id ?? index)}
-                style={[
-                  styles.activityItem,
-                  index === Math.min(ownLogs.length, 6) - 1 && styles.queueItemLast,
-                ]}
+                style={[styles.activityItem, index === Math.min(ownLogs.length, 6) - 1 && styles.rowLast]}
               >
                 <View style={styles.activityIcon}>
-                  <MaterialCommunityIcons
-                    name="file-document-outline"
-                    size={14}
-                    color={colors.primary}
-                  />
+                  <MaterialCommunityIcons name="file-document-outline" size={14} color={colors.primary} />
                 </View>
-                <View style={styles.activityBody}>
+                <View style={styles.rowMain}>
                   <Text style={styles.activityText}>
-                    {String(
-                      log.message ?? log.action ?? "System activity recorded",
-                    )}
+                    {String(log.message ?? log.action ?? log.event ?? "System activity recorded")}
                   </Text>
-                  <Text style={styles.activityTime}>
-                    {String(log.created_at ?? log.timestamp ?? "")}
-                  </Text>
+                  <Text style={styles.rowMeta}>{String(log.created_at ?? log.timestamp ?? "")}</Text>
                 </View>
               </View>
             ))
           )}
         </Card>
       </View>
-
-      <TouchableOpacity
-        accessibilityRole="button"
-        activeOpacity={0.7}
-        style={styles.logoutHint}
-        onPress={() => router.push("/(vendor)/profile")}
-      >
-        <Text style={styles.logoutHintText}>Manage your account in Profile</Text>
-        <MaterialCommunityIcons name="chevron-right" size={14} color={colors.primary} />
-      </TouchableOpacity>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  profileHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 11,
-    padding: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  profileIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: radius.chip,
-    backgroundColor: colors.primaryLight,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  profileHeaderText: {
-    flex: 1,
-  },
-  profileName: {
-    fontSize: 14,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-    color: colors.text,
-  },
-  profileId: {
-    fontSize: 10,
-    color: colors.muted,
-    marginTop: 2,
-    fontFamily: fonts.regular,
-  },
-  cardPadding: {
-    paddingHorizontal: 16,
-    paddingVertical: 4,
-  },
-  queueItem: {
+  row: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
-    paddingVertical: 13,
+    padding: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  queueItemLast: {
+  rowLast: {
     borderBottomWidth: 0,
   },
-  queueMain: {
+  rowMain: {
     flex: 1,
     gap: 3,
   },
-  queueTitle: {
-    fontSize: 11,
-    fontWeight: "600",
-    fontFamily: fonts.semibold,
+  rowTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    fontFamily: fonts.bold,
     color: colors.text,
   },
-  queueSubtitle: {
+  rowMeta: {
     fontSize: 10,
     color: colors.muted,
     fontFamily: fonts.regular,
+  },
+  aggregateRow: {
+    backgroundColor: colors.tableHeader,
+  },
+  aggregateValue: {
+    fontSize: 14,
+    fontWeight: "700",
+    fontFamily: fonts.bold,
+  },
+  riskRow: {
+    padding: 14,
+    gap: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  riskHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  cardPadding: {
+    paddingHorizontal: 16,
+    paddingVertical: 4,
   },
   activityItem: {
     flexDirection: "row",
@@ -359,37 +320,15 @@ const styles = StyleSheet.create({
   activityIcon: {
     width: 28,
     height: 28,
-    borderRadius: 8,
+    borderRadius: radius.control,
     backgroundColor: colors.primaryLight,
     alignItems: "center",
     justifyContent: "center",
-  },
-  activityBody: {
-    flex: 1,
-    gap: 3,
   },
   activityText: {
     fontSize: 11,
     lineHeight: 16,
     color: colors.text,
     fontFamily: fonts.regular,
-  },
-  activityTime: {
-    fontSize: 9,
-    color: colors.muted,
-    fontFamily: fonts.regular,
-  },
-  logoutHint: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 4,
-    paddingVertical: 4,
-  },
-  logoutHintText: {
-    fontSize: 11,
-    fontWeight: "600",
-    fontFamily: fonts.semibold,
-    color: colors.primary,
   },
 });

@@ -33,6 +33,25 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+/**
+ * Seed vendors store camelCase / flat fields (verificationStatus, localityTier,
+ * top-level latitude/address, GeoJSON `location`); app-created vendors store
+ * status, locality_tier and location.{latitude,longitude,address}.
+ */
+function normalizeVendor(vendor: VendorProfile): VendorProfile {
+  const loc = (vendor.location ?? {}) as VendorProfile["location"] & { coordinates?: number[] };
+  return {
+    ...vendor,
+    status: vendor.status ?? (vendor.verificationStatus as string | undefined),
+    locality_tier: vendor.locality_tier ?? (vendor.localityTier as string | undefined),
+    location: {
+      latitude: loc.latitude ?? (vendor.latitude as number | undefined) ?? loc.coordinates?.[1] ?? null,
+      longitude: loc.longitude ?? (vendor.longitude as number | undefined) ?? loc.coordinates?.[0] ?? null,
+      address: loc.address ?? (vendor.address as string | undefined) ?? "",
+    },
+  };
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong. Please try again.";
 }
@@ -45,7 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // GET /vendors/{id} resolves by vendor_id or Mongo _id; GET /users/{id}
     // is the fallback for accounts whose user_id points elsewhere.
     const profile = (await api.getVendor(userId)) ?? (await api.getUser(userId));
-    return profile;
+    return profile && normalizeVendor(profile);
   }, []);
 
   const signIn = useCallback(

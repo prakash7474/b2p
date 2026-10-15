@@ -17,37 +17,57 @@ export type VendorProfile = StringMap & {
   };
 };
 
-export type InventoryItem = StringMap & {
-  _id?: string;
-  product_id?: string;
-  product_name?: string;
-  quantity?: number;
-  reorder_level?: number;
-  minimum_stock?: number;
-  threshold?: number;
+export type BatchChip = {
+  batch_id?: string;
+  remaining_kg?: number;
+  status?: string;
+  received_at?: string | null;
 };
 
 export type ForecastItem = {
   product_name?: string;
+  model_product?: string;
   predicted_demand?: number;
   safety_stock?: number;
   recommended_stock?: number;
   current_stock?: number;
-  mismatch?: number;
-  has_mismatch?: boolean;
-  mismatch_type?: "deficit" | "surplus" | "matched";
-  mismatch_desc?: string;
-  recommended_order?: number;
+  deficit?: number;
+  refill_quantity?: number;
+  restock_needed?: boolean;
+  status?: string;
+  has_sales_history?: boolean;
+  batches?: BatchChip[];
 };
 
-export type RiskEvaluation = StringMap & {
+/** A batch held by the vendor, with its stock state and model spoilage risk. */
+export type VendorBatch = StringMap & {
   batch_id?: string;
   product_name?: string;
-  risk_label?: string;
-  risk_score?: string;
-  risk_score_value?: number;
+  status?: string;
+  volume_kg?: number;
+  remaining_kg?: number;
+  threshold_kg?: number;
+  low_stock?: boolean;
+  received_at?: string | null;
+  expires_at?: string | null;
+  risk_score?: number;
+  risk_label?: "Low" | "Medium" | "High";
   probabilities?: Record<string, number>;
   action?: string;
+};
+
+export type AvailableBatch = StringMap & {
+  batch_id?: string;
+  product_name?: string;
+  remaining_kg?: number;
+  manufactured_at?: string | null;
+};
+
+export type RiskReport = {
+  evaluations: VendorBatch[];
+  aggregateScore: number | null;
+  aggregateLabel: string | null;
+  message?: string;
 };
 
 export type DemandRequest = StringMap & {
@@ -55,7 +75,10 @@ export type DemandRequest = StringMap & {
   vendor_id?: string;
   priority?: string;
   status?: string;
+  admin_notes?: string;
+  created_at?: string;
   items?: {
+    batch_id?: string;
     product_id?: string;
     product_name?: string;
     quantity?: number;
@@ -163,25 +186,41 @@ export const api = {
   },
 
   // ---- features ------------------------------------------------------
-  async getInventory(vendorKey: string) {
-    const data = await request<{ inventory?: InventoryItem[] }>(
-      `/vendors/${encodeURIComponent(vendorKey)}/inventory`,
+  async getBatches(vendorKey: string) {
+    const data = await request<{ batches?: VendorBatch[] }>(
+      `/vendors/${encodeURIComponent(vendorKey)}/batches`,
     );
-    return data?.inventory ?? [];
+    return data?.batches ?? [];
   },
 
   async getForecast(vendorKey: string) {
-    const data = await request<{ forecast?: ForecastItem[] }>(
+    const data = await request<{ forecast?: ForecastItem[]; message?: string }>(
       `/vendors/${encodeURIComponent(vendorKey)}/demand-forecast`,
     );
-    return data?.forecast ?? [];
+    return { forecast: data?.forecast ?? [], message: data?.message };
   },
 
-  async getRisk(vendorKey: string) {
-    const data = await request<{ evaluations?: RiskEvaluation[]; message?: string }>(
-      `/vendors/${encodeURIComponent(vendorKey)}/spoilage-risk`,
+  async getRisk(vendorKey: string): Promise<RiskReport> {
+    const data = await request<{
+      evaluations?: VendorBatch[];
+      aggregate_risk_score?: number | null;
+      aggregate_risk_label?: string | null;
+      message?: string;
+    }>(`/vendors/${encodeURIComponent(vendorKey)}/spoilage-risk`);
+    return {
+      evaluations: data?.evaluations ?? [],
+      aggregateScore: data?.aggregate_risk_score ?? null,
+      aggregateLabel: data?.aggregate_risk_label ?? null,
+      message: data?.message,
+    };
+  },
+
+  /** Batches the admin has exposed for vendors to request. */
+  async getAvailableBatches() {
+    const data = await request<{ batches?: AvailableBatch[] }>(
+      "/batches?status=available&exposed=true",
     );
-    return { evaluations: data?.evaluations ?? [], message: data?.message };
+    return data?.batches ?? [];
   },
 
   async getDemands(vendorKey: string) {
@@ -191,25 +230,26 @@ export const api = {
     return data?.restock_requests ?? [];
   },
 
-  createDemand(vendorKey: string, payload: StringMap) {
+  requestBatch(vendorKey: string, batchId: string) {
     return request<{ message?: string; demand_id?: string }>(
       `/vendors/${encodeURIComponent(vendorKey)}/demands`,
-      { method: "POST", body: payload },
+      { method: "POST", body: { items: [{ batch_id: batchId }] } },
     );
   },
 
-  confirmDemand(vendorKey: string, demandId: string) {
+  receiveBatch(vendorKey: string, batchId: string) {
     return request<{ message?: string }>(
-      `/vendors/${encodeURIComponent(vendorKey)}/demands/${encodeURIComponent(demandId)}/confirm`,
+      `/vendors/${encodeURIComponent(vendorKey)}/batches/${encodeURIComponent(batchId)}/receive`,
       { method: "POST" },
     );
   },
 
-  syncInventory(vendorKey: string) {
-    return request<{ message?: string; synced_demands?: number }>(
-      `/vendors/${encodeURIComponent(vendorKey)}/inventory/sync`,
-      { method: "POST" },
-    );
+  /** Same endpoint a customer purchase uses; deducts kg from the batch. */
+  recordSale(vendorKey: string, batchId: string, quantityKg: number) {
+    return request<{ message?: string; alerts?: { alert_message?: string }[] }>("/orders", {
+      method: "POST",
+      body: { vendor_id: vendorKey, batch_id: batchId, quantity_kg: quantityKg },
+    });
   },
 
   async getLogs() {

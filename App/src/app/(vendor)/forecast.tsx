@@ -1,12 +1,13 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { Card, EmptyState, SectionTitle, StatCard, StatGrid } from "@/src/components/cards";
-import { SecondaryButton } from "@/src/components/controls";
+import { Button, SecondaryButton } from "@/src/components/controls";
 import { LoadingScreen, Screen } from "@/src/components/layout";
 import { AlertBox, BarMeter, StatusPill } from "@/src/components/status";
-import { api, type ForecastItem } from "@/src/lib/api";
+import { api, type BatchChip, type ForecastItem } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
 import { colors, fonts } from "@/src/theme";
 
@@ -14,6 +15,7 @@ export default function ForecastScreen() {
   const { vendorId } = useAuth();
 
   const [forecast, setForecast] = useState<ForecastItem[] | null>(null);
+  const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -23,7 +25,9 @@ export default function ForecastScreen() {
 
     try {
       setError("");
-      setForecast(await api.getForecast(vendorId));
+      const result = await api.getForecast(vendorId);
+      setForecast(result.forecast);
+      setNote(result.message ?? "");
     } catch (caught) {
       setError(messageOf(caught));
       setForecast([]);
@@ -49,17 +53,13 @@ export default function ForecastScreen() {
   const items = forecast ?? [];
   const totals = items.reduce(
     (acc, item) => {
-      const demand = Number(item.predicted_demand ?? 0);
-      const safety = Number(item.safety_stock ?? 0);
-      const recStock = Number(item.recommended_stock ?? demand + safety);
-      const stock = Number(item.current_stock ?? 0);
-      acc.predicted += demand;
-      acc.recStock += recStock;
-      acc.current += stock;
-      if (Math.abs(stock - recStock) >= 0.1) acc.mismatches += 1;
+      acc.predicted += Number(item.predicted_demand ?? 0);
+      acc.recStock += Number(item.recommended_stock ?? 0);
+      acc.current += Number(item.current_stock ?? 0);
+      if (item.restock_needed) acc.restock += 1;
       return acc;
     },
-    { predicted: 0, recStock: 0, current: 0, mismatches: 0 },
+    { predicted: 0, recStock: 0, current: 0, restock: 0 },
   );
 
   const chartMax = Math.max(
@@ -74,7 +74,7 @@ export default function ForecastScreen() {
   return (
     <Screen
       title="Demand Forecast"
-      subtitle="Vendor demand, recommended stock to hold, and inventory mismatch"
+      subtitle="Predicted demand for the products you hold, and what to refill"
       icon="chart-timeline-variant"
       action={
         <SecondaryButton
@@ -89,6 +89,14 @@ export default function ForecastScreen() {
       onRefresh={refresh}
     >
       {error ? <AlertBox type="error" message={error} /> : null}
+      {!error && note ? <AlertBox type="warning" message={note} /> : null}
+
+      <Button
+        label="Request Batches"
+        full
+        icon={<MaterialCommunityIcons name="truck-delivery-outline" size={15} color="#fff" />}
+        onPress={() => router.push("/(vendor)/request-batches")}
+      />
 
       <StatGrid>
         <StatCard
@@ -105,16 +113,16 @@ export default function ForecastScreen() {
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="package-variant-closed" size={18} color={color} />}
-          label="Current Inventory"
+          label="Current Stock"
           value={totals.current.toFixed(1)}
-          sub="in store"
+          sub="kg in batches"
         />
         <StatCard
-          icon={(color) => <MaterialCommunityIcons name="scale-unbalanced" size={18} color={color} />}
-          label="Stock Mismatches"
-          value={totals.mismatches}
+          icon={(color) => <MaterialCommunityIcons name="alert-circle-outline" size={18} color={color} />}
+          label="Restock Needed"
+          value={totals.restock}
           sub="products"
-          tone={totals.mismatches > 0 ? "warning" : "success"}
+          tone={totals.restock > 0 ? "danger" : "success"}
         />
       </StatGrid>
 
@@ -122,8 +130,8 @@ export default function ForecastScreen() {
         <Card>
           <EmptyState
             icon={<MaterialCommunityIcons name="chart-timeline-variant" size={26} color={colors.muted} />}
-            title="No forecast data"
-            text="The backend did not return forecast records for your shop yet."
+            title="No batches yet"
+            text="Forecasts appear for the products you hold. Request a batch to get started."
           />
         </Card>
       ) : (
@@ -145,13 +153,13 @@ export default function ForecastScreen() {
                 </View>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: colors.sidebar }]} />
-                  <Text style={styles.legendText}>Current Inventory</Text>
+                  <Text style={styles.legendText}>Current Stock</Text>
                 </View>
               </View>
 
               {items.map((item, index) => {
                 const demand = Number(item.predicted_demand ?? 0);
-                const recStock = Number(item.recommended_stock ?? demand + Number(item.safety_stock ?? 0));
+                const recStock = Number(item.recommended_stock ?? 0);
                 const stock = Number(item.current_stock ?? 0);
 
                 return (
@@ -178,7 +186,7 @@ export default function ForecastScreen() {
                       color={colors.warning}
                     />
                     <BarMeter
-                      label="Current Inventory"
+                      label="Current Stock"
                       value={stock.toFixed(1)}
                       percent={(stock / chartMax) * 100}
                       color={colors.sidebar}
@@ -191,18 +199,17 @@ export default function ForecastScreen() {
 
           <View>
             <SectionTitle
-              title="Vendor Demand & Stock Balance"
-              subtitle="Recommended stock to be held and inventory mismatch"
+              title="Demand & Refill"
+              subtitle="Refill only when stock is below demand: deficit + safety stock"
             />
             <Card>
               {items.map((item, index) => {
                 const demand = Number(item.predicted_demand ?? 0);
                 const safety = Number(item.safety_stock ?? 0);
-                const recStock = Number(item.recommended_stock ?? demand + safety);
                 const current = Number(item.current_stock ?? 0);
-                const mismatch = Number((current - recStock).toFixed(1));
-                const hasMismatch = Math.abs(mismatch) >= 0.1;
-                const isShortage = mismatch < -0.1;
+                const deficit = Number(item.deficit ?? 0);
+                const refill = Number(item.refill_quantity ?? 0);
+                const restock = Boolean(item.restock_needed);
 
                 return (
                   <View
@@ -217,59 +224,40 @@ export default function ForecastScreen() {
                         {String(item.product_name ?? "Product")}
                       </Text>
                       <StatusPill
-                        status={!hasMismatch ? "active" : isShortage ? "pending" : "synced"}
-                        label={
-                          !hasMismatch
-                            ? "Matched"
-                            : isShortage
-                              ? `Mismatch: -${Math.abs(mismatch)} Deficit`
-                              : `Mismatch: +${mismatch} Surplus`
-                        }
+                        status={restock ? "high" : "active"}
+                        label={restock ? "Restock Needed" : "No Restock Needed"}
                       />
                     </View>
 
                     <View style={styles.metrics}>
                       <Metric label="Demand" value={demand} />
-                      <Metric label="Safety Buffer" value={safety} />
-                      <Metric label="Rec. Stock to Hold" value={recStock} highlight />
-                      <Metric label="Current Inventory" value={current} />
+                      <Metric label="Safety Stock" value={safety} />
+                      <Metric label="Rec. Stock" value={Number(item.recommended_stock ?? 0)} highlight />
+                      <Metric label="Current" value={current} />
                     </View>
 
-                    {hasMismatch ? (
-                      <View
-                        style={[
-                          styles.mismatchAlert,
-                          isShortage ? styles.mismatchDeficit : styles.mismatchSurplus,
-                        ]}
-                      >
-                        <MaterialCommunityIcons
-                          name={isShortage ? "alert-circle-outline" : "information-outline"}
-                          size={15}
-                          color={isShortage ? colors.danger : colors.primaryDark}
-                        />
-                        <Text
-                          style={[
-                            styles.mismatchText,
-                            isShortage ? { color: colors.danger } : { color: colors.primaryDark },
-                          ]}
-                        >
-                          {isShortage
-                            ? `Mismatch Shortage: Current inventory (${current}) is below recommended stock (${recStock}). Restock ${Math.abs(mismatch)} units recommended.`
-                            : `Mismatch Surplus: Current inventory (${current}) exceeds recommended stock (${recStock}) by ${mismatch} units.`}
-                        </Text>
-                      </View>
-                    ) : (
-                      <View style={styles.mismatchBalanced}>
-                        <MaterialCommunityIcons
-                          name="check-circle-outline"
-                          size={15}
-                          color={colors.success}
-                        />
-                        <Text style={styles.mismatchBalancedText}>
-                          Inventory matches recommended stock perfectly ({current} units).
-                        </Text>
-                      </View>
-                    )}
+                    <View style={[styles.mismatchAlert, restock ? styles.mismatchDeficit : styles.mismatchBalanced]}>
+                      <MaterialCommunityIcons
+                        name={restock ? "alert-circle-outline" : "check-circle-outline"}
+                        size={15}
+                        color={restock ? colors.danger : colors.success}
+                      />
+                      <Text style={[styles.mismatchText, { color: restock ? colors.danger : colors.success }]}>
+                        {restock
+                          ? `Deficit ${deficit} kg (demand ${demand} > stock ${current}). Refill ${refill} kg = deficit + ${safety} kg safety stock.`
+                          : `Stock ${current} kg covers demand ${demand} kg. No refill needed.`}
+                      </Text>
+                    </View>
+
+                    {item.has_sales_history === false ? (
+                      <Text style={styles.coldStart}>No sales history yet: cold-start estimate.</Text>
+                    ) : null}
+
+                    <View style={styles.chips}>
+                      {(item.batches ?? []).map((batch) => (
+                        <BatchChipView key={String(batch.batch_id)} batch={batch} />
+                      ))}
+                    </View>
                   </View>
                 );
               })}
@@ -278,6 +266,19 @@ export default function ForecastScreen() {
         </>
       )}
     </Screen>
+  );
+}
+
+function BatchChipView({ batch }: { batch: BatchChip }) {
+  const when = batch.received_at ? new Date(String(batch.received_at)) : null;
+  return (
+    <View style={styles.chip}>
+      <Text style={styles.chipId}>{String(batch.batch_id ?? "batch")}</Text>
+      <Text style={styles.chipMeta}>
+        {Number(batch.remaining_kg ?? 0)} kg
+        {when && !Number.isNaN(when.getTime()) ? ` · ${when.toLocaleDateString()}` : ""}
+      </Text>
+    </View>
   );
 }
 
@@ -402,10 +403,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff5f5",
     borderColor: "#fed7d7",
   },
-  mismatchSurplus: {
-    backgroundColor: "#f7fafc",
-    borderColor: "#e2e8f0",
-  },
   mismatchText: {
     fontSize: 11,
     fontFamily: fonts.medium,
@@ -413,20 +410,36 @@ const styles = StyleSheet.create({
     lineHeight: 15,
   },
   mismatchBalanced: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
     backgroundColor: "#f0fff4",
     borderColor: "#c6f6d5",
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
   },
-  mismatchBalancedText: {
-    fontSize: 11,
-    fontFamily: fonts.medium,
-    color: colors.success,
-    flex: 1,
+  coldStart: {
+    fontSize: 10,
+    color: colors.muted,
+    fontFamily: fonts.regular,
+  },
+  chips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  chip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.primaryLight,
+    borderRadius: 14,
+    paddingVertical: 4,
+    paddingHorizontal: 9,
+  },
+  chipId: {
+    fontSize: 10,
+    fontWeight: "700",
+    fontFamily: fonts.bold,
+    color: colors.primaryDark,
+  },
+  chipMeta: {
+    fontSize: 9,
+    color: colors.muted,
+    fontFamily: fonts.regular,
   },
 });

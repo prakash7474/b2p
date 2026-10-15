@@ -48,21 +48,14 @@ export default function VendorLayout() {
       <Tabs.Screen
         name="inventory"
         options={{
-          title: "Inventory",
+          title: "Batches",
           tabBarIcon: ({ color }) => (
             <MaterialCommunityIcons name="package-variant" size={20} color={color} />
           ),
         }}
       />
-      <Tabs.Screen
-        name="demands"
-        options={{
-          title: "Demands",
-          tabBarIcon: ({ color }) => (
-            <MaterialCommunityIcons name="clipboard-text-outline" size={20} color={color} />
-          ),
-        }}
-      />
+      {/* Opened from the Forecast screen, not a tab. */}
+      <Tabs.Screen name="request-batches" options={{ href: null }} />
       <Tabs.Screen
         name="forecast"
         options={{

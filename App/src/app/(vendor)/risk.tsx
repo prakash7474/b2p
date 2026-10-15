@@ -6,25 +6,14 @@ import { Card, EmptyState, SectionTitle, StatCard, StatGrid } from "@/src/compon
 import { SecondaryButton } from "@/src/components/controls";
 import { LoadingScreen, Screen } from "@/src/components/layout";
 import { AlertBox, BarMeter, StatusPill } from "@/src/components/status";
-import { api, type RiskEvaluation } from "@/src/lib/api";
+import { api, type RiskReport } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
-import { colors, fonts, radius } from "@/src/theme";
-
-function formatProbability(value: unknown): string {
-  return `${(Number(value ?? 0) * 100).toFixed(1)}%`;
-}
-
-const riskBarColor: Record<string, string> = {
-  High: colors.danger,
-  Medium: colors.warning,
-  Normal: colors.success,
-};
+import { colors, fonts, radius, riskColor } from "@/src/theme";
 
 export default function RiskScreen() {
   const { vendorId } = useAuth();
 
-  const [evaluations, setEvaluations] = useState<RiskEvaluation[] | null>(null);
-  const [note, setNote] = useState("");
+  const [report, setReport] = useState<RiskReport | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -34,12 +23,10 @@ export default function RiskScreen() {
 
     try {
       setError("");
-      const result = await api.getRisk(vendorId);
-      setEvaluations(result.evaluations);
-      setNote(result.message ?? "");
+      setReport(await api.getRisk(vendorId));
     } catch (caught) {
       setError(messageOf(caught));
-      setEvaluations([]);
+      setReport(null);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -59,22 +46,14 @@ export default function RiskScreen() {
     return <LoadingScreen label="Evaluating spoilage risk..." />;
   }
 
-  const items = evaluations ?? [];
-  const counts = items.reduce<{ high: number; medium: number; normal: number }>(
-    (acc, item) => {
-      const risk = String(item.risk_label ?? "").toLowerCase();
-      if (risk === "high") acc.high += 1;
-      else if (risk === "medium") acc.medium += 1;
-      else acc.normal += 1;
-      return acc;
-    },
-    { high: 0, medium: 0, normal: 0 },
-  );
+  const items = report?.evaluations ?? [];
+  const count = (label: string) => items.filter((item) => item.risk_label === label).length;
+  const aggregate = report?.aggregateScore;
 
   return (
     <Screen
       title="Spoilage Risk"
-      subtitle="AI-based batch risk evaluation and recommended actions"
+      subtitle="Model risk score for every batch you hold"
       icon="shield-alert-outline"
       iconTone="danger"
       action={
@@ -90,132 +69,127 @@ export default function RiskScreen() {
       onRefresh={refresh}
     >
       {error ? <AlertBox type="error" message={error} /> : null}
-      {!error && note ? <AlertBox type="warning" message={note} /> : null}
-
-      <StatGrid>
-        <StatCard
-          icon={(color) => <MaterialCommunityIcons name="shield-alert-outline" size={18} color={color} />}
-          label="High Risk"
-          value={counts.high}
-          sub="batches"
-          tone={counts.high > 0 ? "danger" : "success"}
-        />
-        <StatCard
-          icon={(color) => <MaterialCommunityIcons name="thermometer" size={18} color={color} />}
-          label="Medium Risk"
-          value={counts.medium}
-          sub="batches"
-          tone={counts.medium > 0 ? "warning" : "success"}
-        />
-        <StatCard
-          icon={(color) => <MaterialCommunityIcons name="check-circle-outline" size={18} color={color} />}
-          label="Normal"
-          value={counts.normal}
-          sub="batches"
-          tone="success"
-        />
-        <StatCard
-          icon={(color) => <MaterialCommunityIcons name="cube-outline" size={18} color={color} />}
-          label="Total Batches"
-          value={items.length}
-          sub="evaluated"
-        />
-      </StatGrid>
 
       {items.length === 0 && !error ? (
         <Card>
           <EmptyState
             icon={<MaterialCommunityIcons name="shield-alert-outline" size={26} color={colors.muted} />}
-            title="No active batches"
-            text="Batch risk evaluations appear here once your shop has active stock."
+            title="No batches assigned"
+            text={report?.message ?? "Risk appears once batches are assigned to your shop."}
           />
         </Card>
       ) : (
-        <View>
-          <SectionTitle
-            title="Batch Risk Evaluation"
-            subtitle="Risk label and calculated risk score for each batch"
-          />
-          <Card>
-            {items.map((item, index) => {
-              const risk = String(item.risk_label ?? "Low");
-              const probabilities = item.probabilities ?? {};
-              const score = item.risk_score ?? formatProbability(item.risk_score_value ?? probabilities[risk] ?? 0);
-              const tone =
-                risk.toLowerCase() === "high"
-                  ? "danger"
-                  : risk.toLowerCase() === "medium"
-                    ? "warning"
-                    : "success";
-
-              return (
-                <View
-                  key={String(item.batch_id ?? index)}
-                  style={[
-                    styles.batchRow,
-                    index === items.length - 1 && styles.batchRowLast,
-                  ]}
-                >
-                  <View style={styles.batchHeader}>
-                    <View style={styles.batchHeaderText}>
-                      <Text style={styles.batchProduct}>
-                        {String(item.product_name ?? "Product")}
-                      </Text>
-                      <Text style={styles.batchId}>
-                        Batch {String(item.batch_id ?? "unknown")}
-                      </Text>
-                    </View>
-                    <StatusPill status={risk.toLowerCase()} label={risk} />
-                  </View>
-
-                  <View style={styles.scoreContainer}>
-                    <View style={styles.scoreCard}>
-                      <Text style={styles.scoreLabel}>Risk Level</Text>
-                      <Text
-                        style={[
-                          styles.scoreLabelValue,
-                          tone === "danger"
-                            ? styles.scoreDanger
-                            : tone === "warning"
-                              ? styles.scoreWarning
-                              : styles.scoreSuccess,
-                        ]}
-                      >
-                        {risk} Risk
-                      </Text>
-                    </View>
-                    <View style={styles.scoreCard}>
-                      <Text style={styles.scoreLabel}>Risk Score</Text>
-                      <Text
-                        style={[
-                          styles.scoreValue,
-                          tone === "danger"
-                            ? styles.scoreDanger
-                            : tone === "warning"
-                              ? styles.scoreWarning
-                              : styles.scoreSuccess,
-                        ]}
-                      >
-                        {score}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-              );
-            })}
+        <>
+          <Card style={[styles.aggregate, { borderColor: riskColor(report?.aggregateLabel) }]}>
+            <Text style={styles.aggregateLabel}>Shop Aggregate Risk</Text>
+            <Text style={[styles.aggregateValue, { color: riskColor(report?.aggregateLabel) }]}>
+              {aggregate == null ? "—" : `${aggregate.toFixed(1)}%`}
+            </Text>
+            <Text style={[styles.aggregateBand, { color: riskColor(report?.aggregateLabel) }]}>
+              {report?.aggregateLabel ?? "—"} risk · weighted by kg in each batch
+            </Text>
+            <BarMeter percent={aggregate ?? 0} color={riskColor(report?.aggregateLabel)} />
           </Card>
-        </View>
+
+          <StatGrid>
+            <StatCard
+              icon={(color) => <MaterialCommunityIcons name="shield-alert-outline" size={18} color={color} />}
+              label="High (>70%)"
+              value={count("High")}
+              sub="batches"
+              tone={count("High") > 0 ? "danger" : "success"}
+            />
+            <StatCard
+              icon={(color) => <MaterialCommunityIcons name="thermometer" size={18} color={color} />}
+              label="Medium (30-70%)"
+              value={count("Medium")}
+              sub="batches"
+              tone={count("Medium") > 0 ? "warning" : "success"}
+            />
+            <StatCard
+              icon={(color) => <MaterialCommunityIcons name="check-circle-outline" size={18} color={color} />}
+              label="Low (≤30%)"
+              value={count("Low")}
+              sub="batches"
+              tone="success"
+            />
+            <StatCard
+              icon={(color) => <MaterialCommunityIcons name="cube-outline" size={18} color={color} />}
+              label="Total Batches"
+              value={items.length}
+              sub="evaluated"
+            />
+          </StatGrid>
+
+          <View>
+            <SectionTitle
+              title="Batch Risk Evaluation"
+              subtitle="Score = P(High)×100 + P(Medium)×50"
+            />
+            <Card>
+              {items.map((item, index) => {
+                const label = String(item.risk_label ?? "Low");
+                const score = Number(item.risk_score ?? 0);
+
+                return (
+                  <View
+                    key={String(item.batch_id ?? index)}
+                    style={[styles.batchRow, index === items.length - 1 && styles.batchRowLast]}
+                  >
+                    <View style={styles.batchHeader}>
+                      <View style={styles.batchHeaderText}>
+                        <Text style={styles.batchProduct}>{String(item.product_name ?? "Product")}</Text>
+                        <Text style={styles.batchId}>
+                          Batch {String(item.batch_id ?? "unknown")} · {Number(item.remaining_kg ?? 0)} kg
+                        </Text>
+                      </View>
+                      <StatusPill status={label === "Low" ? "active" : label.toLowerCase()} label={`${label} Risk`} />
+                    </View>
+                    <BarMeter
+                      label="Risk score"
+                      value={`${score.toFixed(1)}%`}
+                      percent={score}
+                      color={riskColor(label)}
+                    />
+                    <Text style={[styles.action, { color: riskColor(label) }]}>{String(item.action ?? "")}</Text>
+                  </View>
+                );
+              })}
+            </Card>
+          </View>
+        </>
       )}
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
+  aggregate: {
+    padding: 16,
+    borderWidth: 2,
+    gap: 4,
+  },
+  aggregateLabel: {
+    fontSize: 11,
+    color: colors.muted,
+    fontFamily: fonts.regular,
+  },
+  aggregateValue: {
+    fontSize: 32,
+    fontWeight: "700",
+    fontFamily: fonts.bold,
+  },
+  aggregateBand: {
+    fontSize: 11,
+    fontWeight: "600",
+    fontFamily: fonts.semibold,
+    marginBottom: 6,
+  },
   batchRow: {
     padding: 15,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
-    gap: 12,
+    gap: 6,
   },
   batchRowLast: {
     borderBottomWidth: 0,
@@ -241,40 +215,9 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontFamily: fonts.regular,
   },
-  scoreContainer: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  scoreCard: {
-    flex: 1,
-    backgroundColor: "#faf8f5",
-    borderRadius: radius.control,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    gap: 4,
-  },
-  scoreLabel: {
+  action: {
     fontSize: 10,
-    color: colors.muted,
-    fontFamily: fonts.regular,
-  },
-  scoreLabelValue: {
-    fontSize: 13,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-  },
-  scoreValue: {
-    fontSize: 16,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-  },
-  scoreDanger: {
-    color: colors.danger,
-  },
-  scoreWarning: {
-    color: colors.warning,
-  },
-  scoreSuccess: {
-    color: colors.success,
+    fontFamily: fonts.medium,
+    borderRadius: radius.control,
   },
 });
