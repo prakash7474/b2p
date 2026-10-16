@@ -16,19 +16,26 @@ import { colors, fonts, radius, shadow } from "@/src/theme";
 /**
  * Shared shell for the authentication screens: brand header, page title,
  * and a card with the Login / Sign Up tabs (same tab style as the admin
- * dashboard's customer page).
+ * dashboard's customer page). `role` switches between the vendor portal
+ * and the customer portal (tab targets + branding).
  */
 export function AuthShell({
   active,
   title,
   subtitle,
+  role = "vendor",
   children,
 }: {
   active: "login" | "signup";
   title: string;
   subtitle: string;
+  role?: "vendor" | "customer";
   children: ReactNode;
 }) {
+  const isCustomer = role === "customer";
+  const loginHref = isCustomer ? "/(auth)/customer-login" : "/(auth)/login";
+  const signupHref = isCustomer ? "/(auth)/customer-signup" : "/(auth)/signup";
+
   return (
     <KeyboardAvoidingView
       style={styles.root}
@@ -44,7 +51,9 @@ export function AuthShell({
           </View>
           <View>
             <Text style={styles.brandName}>B2POnline</Text>
-            <Text style={styles.brandSubtitle}>VENDOR PORTAL</Text>
+            <Text style={styles.brandSubtitle}>
+              {isCustomer ? "CUSTOMER PORTAL" : "VENDOR PORTAL"}
+            </Text>
           </View>
         </View>
 
@@ -57,7 +66,7 @@ export function AuthShell({
               accessibilityRole="tab"
               activeOpacity={0.8}
               style={[styles.tab, active === "login" && styles.tabActive]}
-              onPress={() => router.replace("/(auth)/login")}
+              onPress={() => router.replace(loginHref)}
             >
               <MaterialCommunityIcons
                 name="login"
@@ -73,7 +82,7 @@ export function AuthShell({
               accessibilityRole="tab"
               activeOpacity={0.8}
               style={[styles.tab, active === "signup" && styles.tabActive]}
-              onPress={() => router.replace("/(auth)/signup")}
+              onPress={() => router.replace(signupHref)}
             >
               <MaterialCommunityIcons
                 name="account-plus-outline"

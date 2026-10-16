@@ -5,5 +5,11 @@ import { useAuth } from "@/src/lib/auth";
 export default function Index() {
   const { session } = useAuth();
 
-  return <Redirect href={session ? "/(vendor)" : "/(auth)/login"} />;
+  const href = !session
+    ? "/(auth)/login"
+    : session.role === "customer"
+      ? "/(customer)"
+      : "/(vendor)";
+
+  return <Redirect href={href} />;
 }

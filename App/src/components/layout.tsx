@@ -14,6 +14,8 @@ import { colors, fonts, radius, shadow } from "@/src/theme";
 type ScreenProps = {
   title: string;
   subtitle?: string;
+  /** Portal label shown in the topbar (defaults to the vendor portal). */
+  portal?: "VENDOR PORTAL" | "CUSTOMER PORTAL";
   /** Small chip icon shown next to the page title (AI pages style). */
   icon?: keyof typeof MaterialCommunityIcons.glyphMap;
   iconTone?: "primary" | "danger";
@@ -32,6 +34,7 @@ type ScreenProps = {
 export function Screen({
   title,
   subtitle,
+  portal = "VENDOR PORTAL",
   icon,
   iconTone = "primary",
   action,
@@ -49,7 +52,7 @@ export function Screen({
           </View>
           <View>
             <Text style={styles.brandName}>B2POnline</Text>
-            <Text style={styles.brandSubtitle}>VENDOR PORTAL</Text>
+            <Text style={styles.brandSubtitle}>{portal}</Text>
           </View>
         </View>
 
@@ -188,7 +191,9 @@ export const styles = StyleSheet.create({
   },
   content: {
     padding: 18,
-    paddingBottom: 42,
+    // Clears the 60px bottom tab bar + safe area so the last card is never
+    // covered (vendor portal tabs use the same shell).
+    paddingBottom: 110,
     gap: 16,
   },
   headingRow: {

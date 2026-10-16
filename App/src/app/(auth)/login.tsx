@@ -78,6 +78,17 @@ export default function LoginScreen() {
           New vendor? <Text style={styles.footerLink}>Create a shop account</Text>
         </Text>
       </TouchableOpacity>
+
+      <TouchableOpacity
+        accessibilityRole="link"
+        activeOpacity={0.7}
+        style={styles.footer}
+        onPress={() => router.replace("/(auth)/customer-login")}
+      >
+        <Text style={styles.footerText}>
+          Shopping? <Text style={styles.footerLink}>Customer sign in</Text>
+        </Text>
+      </TouchableOpacity>
     </AuthShell>
   );
 }

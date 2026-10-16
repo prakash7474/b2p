@@ -7,7 +7,7 @@ export default function AuthLayout() {
   const { session } = useAuth();
 
   if (session) {
-    return <Redirect href="/(vendor)" />;
+    return <Redirect href={session.role === "customer" ? "/(customer)" : "/(vendor)"} />;
   }
 
   return (

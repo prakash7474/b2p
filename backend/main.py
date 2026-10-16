@@ -1,3 +1,15 @@
+"""b2p backend — FastAPI service for the batter-to-parent (b2p) supply chain.
+
+Connects to MongoDB (MONGODB_URI from the project-root .env) and exposes:
+  * auth        — /login, /customers/register, /customers/login
+  * vendors     — CRUD, nearby geo search, batches, orders, restock requests
+  * catalog     — /products, /batches, /inventory
+  * ML insights — demand forecast + spoilage risk (joblib model bundles)
+  * admin flows — demand confirm/reject, batch visibility, inventory sync
+
+Run with:  python backend/main.py   (uvicorn on 0.0.0.0:5000)
+"""
+
 import os
 import math
 import re
@@ -59,12 +71,19 @@ COLS = {
 
 # ------------------------------------------------------------
 # Machine Learning Models (Demand Forecast & Spoilage Risk)
+# Model bundles are joblib pickles stored in <project-root>/models.
+# Each bundle holds a trained model, its feature list and fitted encoders.
 # ------------------------------------------------------------
 MODELS_DIR = BASE_DIR / "models"
 warnings.filterwarnings("ignore")
 
 
 def load_model_bundle(filenames):
+    """Load the first joblib bundle found among ``filenames`` in MODELS_DIR.
+
+    Returns None (endpoint handlers then degrade gracefully) when no
+    model file can be loaded.
+    """
     for fname in filenames:
         model_path = MODELS_DIR / fname
         if model_path.exists():
@@ -77,11 +96,14 @@ def load_model_bundle(filenames):
     return None
 
 
+# Demand-forecast bundle: model, features, product/locality/festival encoders,
+# per-product safety-stock table. Products: Idly_Batter, Dosa_Batter, Combo_Pack.
 demand_bundle = load_model_bundle([
     "demand_forecast_model (2).pkl",
     "demand_forecast_model.pkl"
 ])
 
+# Spoilage-risk bundle: model, features, storage-type + label encoders.
 spoilage_bundle = load_model_bundle([
     "spoilage_risk_model (2).pkl",
     "spoilage_risk_model.pkl"
@@ -182,6 +204,7 @@ def _adjust_inventory(vendor_id, batch, delta):
 
 
 def hash_password(password):
+    """bcrypt-hash a plaintext password (salt included)."""
     return bcrypt.hashpw(
         password.encode(),
         bcrypt.gensalt()
@@ -189,6 +212,7 @@ def hash_password(password):
 
 
 def check_password(password, password_hash):
+    """Verify a plaintext password against a stored bcrypt hash."""
     return bcrypt.checkpw(
         password.encode(),
         password_hash.encode()
@@ -196,6 +220,7 @@ def check_password(password, password_hash):
     
 
 def login_user(login, password):
+    """Legacy helper (not wired to a route): returns a result dict, not raises."""
 
     user = COLS["users"].find_one({
         "$or": [
@@ -225,6 +250,7 @@ def login_user(login, password):
 
 
 def _valid_coordinates(latitude, longitude):
+    """Return (lat, lon) as floats when both values are in range, else None."""
     try:
         lat = float(latitude)
         lon = float(longitude)
@@ -236,6 +262,7 @@ def _valid_coordinates(latitude, longitude):
 
 
 def _location_payload(data):
+    """Normalize request location fields into a valid location dict, or None."""
     location = data.get("location") or {}
     latitude = location.get("latitude", data.get("latitude"))
     longitude = location.get("longitude", data.get("longitude"))
@@ -252,6 +279,7 @@ def _location_payload(data):
 
 
 def _save_customer_location(user, location):
+    """Persist the given location on the customer linked to this user."""
     if not location or user.get("role") != "customer":
         return False
     customer_id = user.get("user_id")
@@ -265,6 +293,7 @@ def _save_customer_location(user, location):
 
 
 def _vendor_id_values(vendor):
+    """All values that may appear as vendor_id for this vendor (field + _id)."""
     values = [vendor.get("vendor_id"), str(vendor.get("_id", ""))]
     return [value for value in values if value]
 
@@ -336,6 +365,7 @@ def _migrate_vendor_geo_locations():
 
 
 def ensure_indexes():
+    """Create the indexes the app relies on (geo, lookups) and backfill vendor geo points."""
     _migrate_vendor_geo_locations()
 
     def _create_index(collection, keys, name, **kwargs):
@@ -360,10 +390,12 @@ def ensure_indexes():
 
 @app.on_event("startup")
 def startup_database_setup():
+    """On boot: ping MongoDB, backfill vendor geo points and create indexes."""
     client.admin.command("ping")
     ensure_indexes()
 
 
+# GET / — service health check: database name and the collections we expose.
 @app.get("/")
 def home():
     expected_collections = [
@@ -378,6 +410,8 @@ def home():
     }
 
 
+# POST /login — email/phone + password auth; for customers with a location in
+# the body it also saves the location and returns nearby vendors with stock.
 @app.post("/login")
 def login(data: dict = Body(...)):
 
@@ -409,6 +443,8 @@ def login(data: dict = Body(...)):
         )
     return response
 
+# GET /users — list all users (password hashes stripped); falls back to the
+# vendors collection when the users collection is empty.
 @app.get("/users")
 def get_users():
     users = list(COLS["users"].find({}, {"password_hash": 0}))
@@ -424,6 +460,7 @@ def get_users():
     }
 
 
+# GET /logs — full activity log, newest records included as stored.
 @app.get("/logs")
 def get_logs():
     logs = list(COLS["logs"].find())
@@ -437,6 +474,9 @@ def get_logs():
     }
 
 
+# GET /vendors — with ?latitude=&longitude= returns active nearby vendors that
+# have positive stock (geo search, optional product_id + radius_meters);
+# without coordinates it returns the full vendor list.
 @app.get("/vendors")
 def get_vendors(
     latitude: Optional[float] = None,
@@ -457,6 +497,8 @@ def get_vendors(
     return {"count": len(vendors), "vendors": vendors}
 
 
+# POST /vendors — register a vendor; with email+password also creates the
+# linked vendor user account and an activity log entry.
 @app.post("/vendors")
 def create_vendor(data: dict = Body(...)):
     vendor_id = data.get("vendor_id")
@@ -524,6 +566,7 @@ def create_vendor(data: dict = Body(...)):
     }
 
 
+# GET /vendors/{vendor_id} — single vendor by vendor_id or Mongo _id.
 @app.get("/vendors/{vendor_id}")
 def get_vendor(vendor_id: str = Path(...)):
     query = {
@@ -555,6 +598,8 @@ def get_vendor(vendor_id: str = Path(...)):
         "vendor": vendor
     }
 
+# GET /vendors/{vendor_id}/products — catalog entries for products this
+# vendor has in inventory (empty inventory = full catalog).
 @app.get("/vendors/{vendor_id}/products")
 def get_vendor_products(vendor_id: str = Path(...)):
     vid = vendor_id
@@ -621,6 +666,7 @@ def get_vendor_products(vendor_id: str = Path(...)):
 
 
 
+# GET /vendors/{vendor_id}/inventory — stock rows for one vendor.
 @app.get("/vendors/{vendor_id}/inventory")
 def get_vendor_inventory(vendor_id: str = Path(...)):
     vid = vendor_id
@@ -655,11 +701,13 @@ def get_vendor_inventory(vendor_id: str = Path(...)):
     }
 
 
+# GET /inventory/{vendor_id} — alias of /vendors/{vendor_id}/inventory.
 @app.get("/inventory/{vendor_id}")
 def get_inventory(vendor_id: str = Path(...)):
     return get_vendor_inventory(vendor_id)
 
 
+# GET /vendors/{vendor_id}/orders — customer orders placed at this vendor.
 @app.get("/vendors/{vendor_id}/orders")
 def get_vendor_orders(vendor_id: str = Path(...)):
     orders = list(
@@ -679,6 +727,7 @@ def get_vendor_orders(vendor_id: str = Path(...)):
     }
 
 
+# GET /vendors/{vendor_id}/restock-requests — restock requests for one vendor.
 @app.get("/vendors/{vendor_id}/restock-requests")
 def get_vendor_restock_requests(vendor_id: str = Path(...)):
     requests = list(
@@ -698,6 +747,7 @@ def get_vendor_restock_requests(vendor_id: str = Path(...)):
     }
 
 
+# GET /vendors/{vendor_id}/demands — demand view backed by restock_requests.
 @app.get("/vendors/{vendor_id}/demands")
 def get_vendor_demands(vendor_id: str = Path(...)):
     demands = list(
@@ -716,6 +766,7 @@ def get_vendor_demands(vendor_id: str = Path(...)):
     }
 
 
+# POST /products — add a catalog product (product_id must be unique).
 @app.post("/products")
 def create_product(data: dict = Body(...)):
     product_id = data.get("product_id")
@@ -744,6 +795,7 @@ def create_product(data: dict = Body(...)):
     return {"message": "Product created successfully", "product": product_doc}
 
 
+# GET /products — full product catalog.
 @app.get("/products")
 def list_products():
     products = list(COLS["products"].find())
@@ -752,6 +804,7 @@ def list_products():
     return {"count": len(products), "products": products}
 
 
+# GET /products/{product_id} — one product by product_id (or Mongo _id).
 @app.get("/products/{product_id}")
 def get_product(product_id: str = Path(...)):
     product = COLS["products"].find_one({"product_id": product_id})
@@ -763,6 +816,8 @@ def get_product(product_id: str = Path(...)):
     return {"product": product}
 
 
+# POST /batches — create a batch. Without vendor_id it is "available" for
+# vendors to request; with vendor_id it is assigned straight to that vendor.
 @app.post("/batches")
 def create_batch(data: dict = Body(...)):
     # Without vendor_id the batch is "available": exposed for vendors to request.
@@ -825,6 +880,8 @@ def create_batch(data: dict = Body(...)):
     return {"message": "Batch created successfully", "batch": batch_doc}
 
 
+# GET /batches — list batches; filter by vendor_id / product_id / status,
+# and exposed=false for the admin's hidden batch list.
 @app.get("/batches")
 def list_batches(vendor_id: str = None, product_id: str = None, status: str = None, exposed: Optional[bool] = None):
     query = {}
@@ -857,6 +914,7 @@ def set_batch_visibility(batch_id: str = Path(...), data: dict = Body(...)):
     return {"message": "Batch visibility updated", "batch_id": batch_id, "exposed": bool(data.get("exposed"))}
 
 
+# GET /batches/{batch_id} — one batch by batch_id (or Mongo _id).
 @app.get("/batches/{batch_id}")
 def get_batch(batch_id: str = Path(...)):
     batch = COLS["batches"].find_one({"batch_id": batch_id})
@@ -868,6 +926,7 @@ def get_batch(batch_id: str = Path(...)):
     return {"batch": batch}
 
 
+# POST /inventory — map (or overwrite) a product's stock quantity at a vendor.
 @app.post("/inventory")
 def create_inventory(data: dict = Body(...)):
     vendor_id = data.get("vendor_id")
@@ -929,6 +988,7 @@ def create_inventory(data: dict = Body(...)):
     return {"message": "Inventory created successfully", "inventory": inventory_doc}
 
 
+# GET /inventory — list inventory rows (optional vendor_id / product_id filter).
 @app.get("/inventory")
 def list_inventory(vendor_id: str = None, product_id: str = None):
     query = {}
@@ -943,6 +1003,7 @@ def list_inventory(vendor_id: str = None, product_id: str = None):
 
 
 def _latest_weather():
+    """Most recent weather_forecast document ({} when the collection is empty)."""
     return COLS["weather_forecast"].find_one(sort=[("forecastFor", -1)]) or {}
 
 
@@ -959,6 +1020,7 @@ def _active_festival_type():
 
 
 def _encode(encoder, value, default=0):
+    """Integer-encode a value with a fitted sklearn encoder, with a fallback."""
     try:
         return int(encoder.transform([value])[0])
     except Exception:
@@ -966,6 +1028,8 @@ def _encode(encoder, value, default=0):
 
 
 def _demand_shared_context():
+    """Model features that are the same for every vendor right now:
+    time-of-day/week cyclic encodings, weekend + festival flags, latest weather."""
     now = datetime.datetime.now()
     hour = now.hour
     weekday = now.weekday()
@@ -987,6 +1051,7 @@ def _demand_shared_context():
 
 
 def _find_vendor(vendor_id):
+    """Find a vendor by vendor_id or, when it is valid, by Mongo _id."""
     query = {"vendor_id": vendor_id}
     if ObjectId.is_valid(vendor_id):
         query = {"$or": [{"_id": ObjectId(vendor_id)}, {"vendor_id": vendor_id}]}
@@ -999,6 +1064,7 @@ LOCALITY_ALIASES = {"commercial": "commercial_offices"}
 
 
 def _batch_chip(batch):
+    """Small batch summary embedded in a forecast row."""
     return {
         "batch_id": batch.get("batch_id"),
         "remaining_kg": round(_batch_remaining(batch), 2),
@@ -1073,6 +1139,7 @@ def _vendor_forecast(vendor, ctx):
 
 
 def _forecast_response(vendor, ctx):
+    """Wrap vendor forecasts in the standard response envelope."""
     forecasts, unsupported = _vendor_forecast(vendor, ctx)
     response = {
         "vendor_id": vendor.get("vendor_id"),
@@ -1089,6 +1156,7 @@ def _forecast_response(vendor, ctx):
 
 @app.get("/vendors/{vendor_id}/demand-forecast")
 def get_demand_forecast(vendor_id: str = Path(...)):
+    """Demand forecast for one vendor (the products it actually holds)."""
     if not demand_bundle:
         return {"error": "Demand model not loaded"}
     vendor = _find_vendor(vendor_id)
@@ -1097,6 +1165,8 @@ def get_demand_forecast(vendor_id: str = Path(...)):
     return _forecast_response(vendor, _demand_shared_context())
 
 
+# GET /demand-forecast — forecasts for every vendor with held batches, or a
+# single vendor when ?vendor_id= is supplied.
 @app.get("/demand-forecast")
 def get_all_demand_forecasts(vendor_id: Optional[str] = None):
     if not demand_bundle:
@@ -1123,6 +1193,7 @@ def risk_label_for(score):
     return "Medium" if score <= 70 else "High"
 
 
+# Suggested handling per spoilage risk label (surfaced in API responses).
 RISK_ACTIONS = {
     "High": "Urgent: sell first or return",
     "Medium": "Monitor temperature closely",
@@ -1132,6 +1203,7 @@ STORAGE_ALIASES = {"refrigerated": "fridge"}
 
 
 def _shelf_life_hours(batch, has_fridge):
+    """Product shelf life for the vendor's storage: fridge vs room temperature."""
     """Product shelf life for the vendor's storage: fridge vs room temperature."""
     keys = ("shelf_life_fridge_hrs", "shelf_life_hours") if has_fridge else ("shelf_life_ambient_hrs",)
     name = _product_key(_field(batch, "product_name", "product_id"))
@@ -1232,6 +1304,8 @@ def _batch_evaluation(vendor, batch, weather):
 
 @app.get("/vendors/{vendor_id}/batches")
 def get_vendor_batches(vendor_id: str = Path(...)):
+    """Stock + spoilage evaluation for every batch this vendor holds,
+    sorted worst stock first (remaining - threshold)."""
     vendor = _find_vendor(vendor_id)
     if not vendor:
         return {"error": "Vendor not found"}
@@ -1248,6 +1322,7 @@ def get_vendor_batches(vendor_id: str = Path(...)):
 
 @app.get("/vendors/{vendor_id}/spoilage-risk")
 def get_vendor_spoilage_risk(vendor_id: str = Path(...)):
+    """Spoilage risk for all held batches, plus a volume-weighted aggregate."""
     if not spoilage_bundle:
         return {"error": "Spoilage model not loaded"}
     vendor = _find_vendor(vendor_id)
@@ -1284,6 +1359,9 @@ def get_vendor_spoilage_risk(vendor_id: str = Path(...)):
     }
 
 
+# POST /vendors/{vendor_id}/demands — vendor asks for stock: either one
+# specific available batch (items: [{batch_id}]) or quantities of mapped
+# products (items: [{product_id, quantity}]).
 @app.post("/vendors/{vendor_id}/demands")
 def create_demand(
     vendor_id: str = Path(...),
@@ -1383,6 +1461,9 @@ def create_demand(
 
 
 
+# POST /vendors/{vendor_id}/demands/{demand_id}/confirm — admin approves a
+# pending demand; batch requests assign the batch to this vendor (and reject
+# competing requests for the same batch).
 @app.post("/vendors/{vendor_id}/demands/{demand_id}/confirm")
 def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...)):
     if not ObjectId.is_valid(demand_id):
@@ -1436,6 +1517,8 @@ def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...)):
     }
 
 
+# POST /vendors/{vendor_id}/demands/{demand_id}/reject — admin rejects a
+# pending demand with an optional reason (body: {"reason": "..."}).
 @app.post("/vendors/{vendor_id}/demands/{demand_id}/reject")
 def reject_demand(vendor_id: str = Path(...), demand_id: str = Path(...), data: dict = Body(default={})):
     if not ObjectId.is_valid(demand_id):
@@ -1450,6 +1533,8 @@ def reject_demand(vendor_id: str = Path(...), demand_id: str = Path(...), data: 
     return {"message": "Demand rejected", "demand_id": demand_id, "status": "rejected"}
 
 
+# POST /vendors/{vendor_id}/batches/{batch_id}/receive — vendor confirms
+# delivery of an assigned batch (status assigned -> received).
 @app.post("/vendors/{vendor_id}/batches/{batch_id}/receive")
 def receive_batch(vendor_id: str = Path(...), batch_id: str = Path(...)):
     """Vendor confirms delivery of an assigned batch; closes the matching request."""
@@ -1476,6 +1561,8 @@ def receive_batch(vendor_id: str = Path(...), batch_id: str = Path(...)):
     return {"message": "Batch assignment confirmed", "batch_id": batch_id, "status": "received"}
 
 
+# POST /orders — customer purchase (vendor_id + quantity_kg, optional
+# batch_id / product filter); writes order, movements and stock alerts.
 @app.post("/orders")
 def create_order(data: dict = Body(...)):
     """Customer purchase: deducts kg from a batch (or FEFO across the vendor's batches)."""
@@ -1559,6 +1646,8 @@ def create_order(data: dict = Body(...)):
     return {"message": "Order placed", "order": order, "alerts": alerts}
 
 
+# POST /vendors/{vendor_id}/inventory/sync — apply confirmed product-based
+# demands to inventory and mark those requests "synchronized".
 @app.post("/vendors/{vendor_id}/inventory/sync")
 def sync_inventory(vendor_id: str = Path(...)):
     # Batch requests are closed by /batches/{id}/receive, not by a product sync.
@@ -1627,6 +1716,8 @@ def sync_inventory(vendor_id: str = Path(...)):
     }
 
 
+# GET /pending/vendors — vendors awaiting admin approval (status or
+# verificationStatus == "pending").
 @app.get("/pending/vendors")
 def get_pending_vendors():
     vendors = list(
@@ -1651,6 +1742,7 @@ def get_pending_vendors():
     }
 
 
+# GET /users/{user_id} — vendor profile by user_id, vendor_id or Mongo _id.
 @app.get("/users/{user_id}")
 def get_user(user_id: str = Path(...)):
     query = {
@@ -1683,6 +1775,8 @@ def get_user(user_id: str = Path(...)):
     }
 
 
+# POST /restock-requests — admin/vendor creates a restock request; also
+# opens a pending order linked to the request.
 @app.post("/restock-requests")
 def create_restock_request(data: dict = Body(...)):
     vendor_id = data.get("vendor_id")
@@ -1720,6 +1814,7 @@ def create_restock_request(data: dict = Body(...)):
     }
 
 
+# GET /restock-requests — list restock requests (optional status/vendor_id).
 @app.get("/restock-requests")
 def get_restock_requests(
     status: str = None,
@@ -1744,6 +1839,8 @@ def get_restock_requests(
         "count": len(requests),
         "restock_requests": requests
     }
+# POST /customers/register — create a customer profile + login user in one
+# step; the customer's Mongo _id becomes the user's user_id.
 @app.post("/customers/register")
 def register_customer(data: dict = Body(...)):
     name = data.get("name", "").strip()
@@ -1808,6 +1905,8 @@ def register_customer(data: dict = Body(...)):
             "location": customer_location
         }
     }
+# POST /customers/login — customer auth; with a location in the body it
+# refreshes the saved location and returns nearby vendors with stock.
 @app.post("/customers/login")
 def login_customer(data: dict = Body(...)):
     login_id = (data.get("login") or "").strip()
@@ -1850,6 +1949,7 @@ def login_customer(data: dict = Body(...)):
         )
     return response
 
+# Entry point: run the API with uvicorn on all interfaces, port 5000.
 if __name__ == "__main__":
     import uvicorn
 

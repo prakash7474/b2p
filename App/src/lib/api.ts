@@ -17,6 +17,42 @@ export type VendorProfile = StringMap & {
   };
 };
 
+export type CustomerProfile = StringMap & {
+  _id?: string;
+  customer_id?: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  location?: {
+    latitude?: number | null;
+    longitude?: number | null;
+    address?: string;
+  };
+};
+
+/** A vendor returned by the nearby-stock search (has location + stock). */
+export type NearbyVendor = StringMap & {
+  _id?: string;
+  vendor_id?: string | null;
+  shop_name?: string;
+  owner_name?: string;
+  rating?: number;
+  distance_km?: number;
+  status?: string;
+  location?: {
+    latitude?: number | null;
+    longitude?: number | null;
+    address?: string;
+  };
+  available_inventory?: StringMap[];
+};
+
+export type CustomerLocation = {
+  latitude: number;
+  longitude: number;
+  address?: string;
+};
+
 export type BatchChip = {
   batch_id?: string;
   remaining_kg?: number;
@@ -160,6 +196,46 @@ export const api = {
       method: "POST",
       body: payload,
     });
+  },
+
+  // ---- customer auth -------------------------------------------------
+  /**
+   * POST /customers/login — with a location the backend saves it on the
+   * customer and returns `nearby_vendors` (vendors that have stock and
+   * a geo location within `radius_meters`).
+   */
+  async customerLogin(login: string, password: string, location?: CustomerLocation) {
+    const data = await request<{
+      message?: string;
+      customer?: CustomerProfile;
+      nearby_vendors?: NearbyVendor[];
+    }>("/customers/login", {
+      method: "POST",
+      body: { login, password, location },
+    });
+
+    if (!data?.customer && !data?.message) {
+      throw new Error("Login failed. No customer was returned.");
+    }
+
+    return data;
+  },
+
+  customerRegister(payload: StringMap) {
+    return request<{ message?: string; customer?: CustomerProfile }>("/customers/register", {
+      method: "POST",
+      body: payload,
+    });
+  },
+
+  /** GET /vendors with coordinates = nearby-stock geo search. */
+  async getNearbyVendors(latitude: number, longitude: number, radiusMeters: number) {
+    const data = await request<{ vendors?: NearbyVendor[] }>(
+      `/vendors?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(
+        longitude,
+      )}&radius_meters=${encodeURIComponent(radiusMeters)}`,
+    );
+    return data?.vendors ?? [];
   },
 
   // ---- profile -------------------------------------------------------

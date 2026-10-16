@@ -13,6 +13,11 @@ export default function VendorLayout() {
     return <Redirect href="/(auth)/login" />;
   }
 
+  // Customer sessions belong in the customer portal.
+  if (session.role === "customer") {
+    return <Redirect href="/(customer)" />;
+  }
+
   return (
     <Tabs
       screenOptions={{
