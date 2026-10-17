@@ -101,7 +101,7 @@ References: Pongal in Wikipedia, <https://en.wikipedia.org/wiki/Pongal_(festival
 | `weekdaySin`, `weekdayCos` | Sine and cosine of the weekday number, with **Monday = 0** (the cycle repeats every 7 days) | 8 Jan 2026 is a Thursday (3): sin = 0.4339, cos = -0.901 |
 | `lag1` | Units sold in the **previous** slot (same vendor and product) | Matches in 99.6% of rows. The remaining 0.4% are the first rows of each series, which have no history. |
 | `lag7` | Units sold in the same slot **7 days ago** (14 slots earlier) | Matches in 93.8% of rows. The rest are the first 7 days of each series. |
-| `sameSlot4WeekMean` | Average of the same slot over the last 4 weeks | Used as the baseline |
+| `sameSlot4WeekMean` | Average of the same slot over the last **4 days** (despite the name; checked against every row of the CSV) | Used as the baseline |
 | `rolling7DayMean`, `rolling7DayStd` | Average and spread of the last 7 days (not including the slot being predicted) | |
 | `recentTrend` | Last 7-day average divided by last 28-day average (above 1 means sales are rising) | |
 
@@ -122,7 +122,7 @@ The model must **never see the future**. All history columns use only past sales
 | 9 | `forecastRainProbability` | Forecast chance of rain (0 to 1) |
 | 10 | `lag1` | Sales in the previous slot |
 | 11 | `lag7` | Sales in the same slot a week ago |
-| 12 | `sameSlot4WeekMean` | Average of the same slot over 4 weeks |
+| 12 | `sameSlot4WeekMean` | Average of the same slot over the last 4 days |
 | 13, 14 | `rolling7DayMean`, `rolling7DayStd` | Recent average sales, and how much they jump around |
 | 15 | `recentTrend` | Are sales rising or falling? |
 | 16 | `localityTierEnc` | Type of area (offices, premium residential, and so on) as a number |

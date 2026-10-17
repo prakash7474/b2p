@@ -10,7 +10,8 @@ from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 DATA_FILE = "b2p_demand_forecasting_data.csv"
-MODEL_FILE = "demand_forecast_model.pkl"
+# Written straight into the folder the backend loads models from.
+MODEL_FILE = "../models/demand_forecast_model.pkl"
 RANDOM_STATE = 42
 TEST_SHARE = 0.20
 REFIT_ON_ALL_DATA = True

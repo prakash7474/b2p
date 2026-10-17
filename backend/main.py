@@ -14,6 +14,7 @@ import os
 import math
 import re
 import datetime
+import statistics
 import warnings
 from pathlib import Path as FilePath
 from typing import Optional
@@ -24,6 +25,7 @@ from dotenv import load_dotenv
 from pymongo import MongoClient, ReturnDocument
 from bson import ObjectId
 import bcrypt
+import httpx
 import joblib
 import numpy as np
 import pandas as pd
@@ -98,15 +100,16 @@ def load_model_bundle(filenames):
 
 # Demand-forecast bundle: model, features, product/locality/festival encoders,
 # per-product safety-stock table. Products: Idly_Batter, Dosa_Batter, Combo_Pack.
+# The training scripts write the plain names, so a retrained model wins.
 demand_bundle = load_model_bundle([
-    "demand_forecast_model (2).pkl",
-    "demand_forecast_model.pkl"
+    "demand_forecast_model.pkl",
+    "demand_forecast_model (2).pkl"
 ])
 
 # Spoilage-risk bundle: model, features, storage-type + label encoders.
 spoilage_bundle = load_model_bundle([
-    "spoilage_risk_model (2).pkl",
-    "spoilage_risk_model.pkl"
+    "spoilage_risk_model.pkl",
+    "spoilage_risk_model (2).pkl"
 ])
 
 
@@ -1002,9 +1005,54 @@ def list_inventory(vendor_id: str = None, product_id: str = None):
     return {"count": len(items), "inventory": items}
 
 
+WEATHER_MAX_AGE = datetime.timedelta(hours=1)
+_weather_tried_at = None
+
+
+def _refresh_weather():
+    """Store this hour's Open-Meteo forecast (free, no API key) for the shop area."""
+    hour = datetime.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    response = httpx.get("https://api.open-meteo.com/v1/forecast", timeout=5, params={
+        # Default: Chennai. One reading serves every vendor, like the seeded data did.
+        "latitude": float(os.getenv("WEATHER_LAT", "13.08")),
+        "longitude": float(os.getenv("WEATHER_LON", "80.27")),
+        "hourly": "temperature_2m,relative_humidity_2m,precipitation_probability",
+        "timezone": "UTC",
+        "forecast_days": 1,
+    })
+    response.raise_for_status()
+    hourly = response.json()["hourly"]
+    i = hourly["time"].index(hour.strftime("%Y-%m-%dT%H:%M"))
+    doc = {
+        "forecastFor": hour,
+        "temperatureC": float(hourly["temperature_2m"][i]),
+        "humidityPct": float(hourly["relative_humidity_2m"][i]),
+        # Training data stores rain probability as 0-1; Open-Meteo sends 0-100.
+        "rainProbability": float(hourly["precipitation_probability"][i] or 0) / 100,
+        "source": "open-meteo",
+        "fetchedAt": datetime.datetime.utcnow(),
+    }
+    COLS["weather_forecast"].update_one({"forecastFor": hour, "source": "open-meteo"}, {"$set": doc}, upsert=True)
+    return doc
+
+
 def _latest_weather():
-    """Most recent weather_forecast document ({} when the collection is empty)."""
-    return COLS["weather_forecast"].find_one(sort=[("forecastFor", -1)]) or {}
+    """Weather for the current hour; refreshed from Open-Meteo (at most hourly) when stale.
+
+    Falls back to the newest stored reading, then {} (model defaults), when offline.
+    """
+    global _weather_tried_at
+    now = datetime.datetime.utcnow()
+    latest = COLS["weather_forecast"].find_one({"forecastFor": {"$lte": now}}, sort=[("forecastFor", -1)])
+    if latest and now - latest["forecastFor"] < WEATHER_MAX_AGE:
+        return latest
+    if _weather_tried_at is None or now - _weather_tried_at > WEATHER_MAX_AGE:
+        _weather_tried_at = now
+        try:
+            return _refresh_weather()
+        except Exception as e:
+            print(f"[WARN] Weather refresh failed: {e}")
+    return latest or COLS["weather_forecast"].find_one(sort=[("forecastFor", -1)]) or {}
 
 
 def _active_festival_type():
@@ -1027,12 +1075,23 @@ def _encode(encoder, value, default=0):
         return default
 
 
+# The model only knows two sales windows: training rows are hour 8 or hour 18.
+SLOT_HOURS = (8, 18)
+SLOT_NAMES = ("morning", "evening")
+
+
+def _slot_of(moment):
+    """(local date, 0 = morning / 1 = evening) for a naive UTC timestamp."""
+    local = moment.replace(tzinfo=datetime.timezone.utc).astimezone()
+    return local.date(), 0 if local.hour < 13 else 1
+
+
 def _demand_shared_context():
     """Model features that are the same for every vendor right now:
     time-of-day/week cyclic encodings, weekend + festival flags, latest weather."""
-    now = datetime.datetime.now()
-    hour = now.hour
-    weekday = now.weekday()
+    day, window = _slot_of(datetime.datetime.utcnow())
+    hour = SLOT_HOURS[window]
+    weekday = day.weekday()
 
     weather = _latest_weather()
     festival_type = _active_festival_type()
@@ -1061,6 +1120,55 @@ def _find_vendor(vendor_id):
 HISTORY_FEATURES = ["lag1", "lag7", "sameSlot4WeekMean", "rolling7DayMean", "rolling7DayStd", "recentTrend"]
 # Vendors store "commercial"; the model was trained on "commercial_offices".
 LOCALITY_ALIASES = {"commercial": "commercial_offices"}
+
+
+def _history_features(series):
+    """History inputs from per-slot sales (oldest first, ending at the previous slot),
+    computed exactly as the training CSV defines them (2 slots per day)."""
+    s = list(series) or [0.0]
+    last7, last28 = s[-14:], s[-56:]
+    mean7 = sum(last7) / len(last7)
+    mean28 = sum(last28) / len(last28)
+    # Same window on each of the last 4 days: what the CSV's "sameSlot4WeekMean" holds.
+    same_slot = s[-2::-2][:4]
+    return {
+        "lag1": s[-1],
+        "lag7": s[-14] if len(s) >= 14 else 0.0,
+        "sameSlot4WeekMean": sum(same_slot) / len(same_slot) if same_slot else 0.0,
+        "rolling7DayMean": mean7,
+        "rolling7DayStd": statistics.stdev(last7) if len(last7) > 1 else 0.0,
+        "recentTrend": mean7 / mean28 if mean28 else 1.0,
+    }
+
+
+def _sales_series(vendor, current_slot):
+    """Per model product: kg sold per slot, from the vendor's first recorded sale
+    (last 28 days) up to the slot before ``current_slot``. Empty slots count as 0."""
+    since = datetime.datetime.utcnow() - datetime.timedelta(days=29)
+    names = {p.get("product_id"): p.get("product_name") for p in COLS["products"].find({}, {"product_id": 1, "product_name": 1})}
+    per_slot = {}
+    for move in COLS["inventory_movement"].find({
+        "vendorId": {"$in": _vendor_id_values(vendor)},
+        "movementType": "sale",
+        "occurredAt": {"$gte": since},
+    }):
+        label = _model_label(names.get(move.get("productId"), move.get("productId")))
+        if not label or not isinstance(move.get("occurredAt"), datetime.datetime):
+            continue
+        slot = _slot_of(move["occurredAt"])
+        if slot < current_slot:
+            slots = per_slot.setdefault(label, {})
+            slots[slot] = slots.get(slot, 0.0) + float(move.get("quantity") or 0)
+
+    series = {}
+    for label, slots in per_slot.items():
+        day, window = min(slots)
+        values = []
+        while (day, window) < current_slot:
+            values.append(slots.get((day, window), 0.0))
+            day, window = (day, 1) if window == 0 else (day + datetime.timedelta(days=1), 0)
+        series[label] = values
+    return series
 
 
 def _batch_chip(batch):
@@ -1102,20 +1210,38 @@ def _vendor_forecast(vendor, ctx):
         "hotspotDensityScore": float(_field(vendor, "hotspotDensityScore", "hotspot_density_score", default=18)),
     }
 
+    slot = _slot_of(datetime.datetime.utcnow())
+    sales = _sales_series(vendor, slot)
+
     forecasts = []
     for label, batches in sorted(by_label.items()):
         snapshot = history.get(label)
+        series = sales.get(label)
+        # A full week of real sales beats the seeded snapshot; a few days beat nothing.
+        if series and (len(series) >= 14 or snapshot is None):
+            past = _history_features(series)
+        else:
+            # No snapshot either = cold start with zero history.
+            past = {name: float((snapshot or {}).get(name, 0.0)) for name in HISTORY_FEATURES}
         row = {
             **ctx,
             **vendor_features,
-            # No snapshot = no recorded sales yet: cold start with zero history.
-            **{name: float((snapshot or {}).get(name, 0.0)) for name in HISTORY_FEATURES},
+            **past,
             "productIdEnc": _encode(demand_bundle["product_encoder"], label),
         }
         df_input = pd.DataFrame([row])[demand_bundle["features"]]
         demand = round(float(np.clip(demand_bundle["model"].predict(df_input)[0], 0, None)), 1)
+        # One record per vendor/product/slot, so forecasts can later be scored
+        # against the sales that slot actually got (inventory_movement).
+        COLS["predictions"].update_one(
+            {"vendorId": vendor.get("vendor_id"), "productId": label, "predictionType": "DEMAND",
+             "slotDate": slot[0].isoformat(), "window": SLOT_NAMES[slot[1]]},
+            {"$set": {"predicted": demand, "features": row, "updatedAt": datetime.datetime.utcnow()}},
+            upsert=True,
+        )
         safety = round(float(demand_bundle["safety_stock"].get(label, 0.0)), 1)
-        stock = round(sum(_batch_remaining(b) for b in batches), 1)
+        # Expired stock cannot be sold, so it does not cover demand.
+        stock = round(sum(_batch_remaining(b) for b in batches if _hours_to_expiry(vendor, b) > 0), 1)
 
         deficit = round(max(0.0, demand - stock), 1)
         refill = round(deficit + safety, 1) if deficit > 0 else 0.0
@@ -1131,7 +1257,7 @@ def _vendor_forecast(vendor, ctx):
             "refill_quantity": refill,
             "restock_needed": deficit > 0,
             "status": "Restock Needed" if deficit > 0 else "No Restock Needed",
-            "has_sales_history": snapshot is not None,
+            "has_sales_history": bool(series) or snapshot is not None,
             "batches": [_batch_chip(b) for b in batches],
         })
 
@@ -1186,6 +1312,41 @@ def get_all_demand_forecasts(vendor_id: Optional[str] = None):
     return {"count": len(results), "forecast": results}
 
 
+# POST /festival-calendar — admin adds (or corrects) a festival window that the
+# demand model's isFestivalWindow / festivalTypeEnc features read.
+# Body: {"date": "2027-01-14", "festivalType": "harvestFestival", "windowDays": 3, "name": "Pongal"}
+@app.post("/festival-calendar")
+def add_festival(data: dict = Body(...)):
+    if not demand_bundle:
+        return {"error": "Demand model not loaded"}
+    known = [str(c) for c in demand_bundle["festival_encoder"].classes_ if c != "none"]
+    festival_type = _field(data, "festivalType", "festival_type")
+    if festival_type not in known:
+        return {"error": f"festivalType must be one of: {', '.join(known)} (the types the model was trained on)"}
+    try:
+        day = datetime.date.fromisoformat(str(data.get("date", "")))
+        window_days = int(_field(data, "windowDays", "window_days", default=1))
+    except (TypeError, ValueError):
+        return {"error": "date must be YYYY-MM-DD and windowDays a whole number"}
+    if not 1 <= window_days <= 31:  # _active_festival_type looks back 31 days
+        return {"error": "windowDays must be between 1 and 31"}
+    # Local midnight in UTC, matching how the rest of the backend stores times.
+    start = datetime.datetime.combine(day, datetime.time()).astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    doc = {"date": start, "festivalType": festival_type, "windowDays": window_days,
+           "name": data.get("name", ""), "updated_at": datetime.datetime.utcnow()}
+    COLS["festival_calendar"].update_one({"date": start, "festivalType": festival_type}, {"$set": doc}, upsert=True)
+    return {"message": "Festival saved", "festival": doc}
+
+
+# GET /festival-calendar — every stored festival window, soonest first.
+@app.get("/festival-calendar")
+def list_festivals():
+    festivals = list(COLS["festival_calendar"].find().sort("date", 1))
+    for festival in festivals:
+        festival["_id"] = str(festival["_id"])
+    return {"count": len(festivals), "festivals": festivals}
+
+
 def risk_label_for(score):
     """<=30 Low, 30-70 Medium, >70 High (score is 0-100)."""
     if score <= 30:
@@ -1215,6 +1376,27 @@ def _shelf_life_hours(batch, has_fridge):
     return 72.0 if has_fridge else 24.0
 
 
+def _hours_since_manufacture(batch):
+    """Batch age in hours. Stored hour counts were true when written; age them since."""
+    manufactured = _field(batch, "manufactured_at", "mfgTimestamp")
+    if manufactured:
+        return _hours_since(manufactured) or 0.0
+    elapsed = _hours_since(batch.get("created_at")) or 0.0
+    return float(_field(batch, "hours_since_manufacture", "hoursSinceManufacture", default=0)) + elapsed
+
+
+def _hours_to_expiry(vendor, batch):
+    """Shelf life left in hours at this vendor's storage (<= 0 means expired)."""
+    expires = batch.get("expires_at")
+    if isinstance(expires, datetime.datetime):  # older batches carry a fixed expiry
+        return (expires - datetime.datetime.utcnow()).total_seconds() / 3600
+    if _field(batch, "hours_to_expiry", "hoursToExpiry") is not None:
+        elapsed = _hours_since(batch.get("created_at")) or 0.0
+        return float(_field(batch, "hours_to_expiry", "hoursToExpiry")) - elapsed
+    has_fridge = bool(_field(vendor, "hasRefrigerator", "has_refrigerator", default=True))
+    return _shelf_life_hours(batch, has_fridge) - _hours_since_manufacture(batch)
+
+
 def _spoilage_features(vendor, batch, weather):
     """Model inputs for one batch, computed the way the training data defined them."""
     has_fridge = 1 if _field(vendor, "hasRefrigerator", "has_refrigerator", default=True) else 0
@@ -1229,21 +1411,10 @@ def _spoilage_features(vendor, batch, weather):
     fridge = float(_field(batch, "fridge_temperature_c", "fridgeTemperatureC",
                           default=_field(vendor, "fridgeTemperatureC", "fridge_temperature_c", default=4.0))) if has_fridge else -1.0
 
-    # Stored hour counts were true when the record was written; age them since.
-    elapsed = _hours_since(batch.get("created_at")) or 0.0
-    manufactured = _field(batch, "manufactured_at", "mfgTimestamp")
-    hours_mfg = _hours_since(manufactured) if manufactured else \
-        float(_field(batch, "hours_since_manufacture", "hoursSinceManufacture", default=0)) + elapsed
+    hours_mfg = _hours_since_manufacture(batch)
     received = batch.get("received_at")
     hours_shelf = _hours_since(received) if received else \
         float(_field(batch, "hours_on_shelf", "hoursOnShelf", default=0))
-    expires = batch.get("expires_at")
-    if isinstance(expires, datetime.datetime):  # older batches carry a fixed expiry
-        hours_expiry = (expires - datetime.datetime.utcnow()).total_seconds() / 3600
-    elif _field(batch, "hours_to_expiry", "hoursToExpiry") is not None:
-        hours_expiry = float(_field(batch, "hours_to_expiry", "hoursToExpiry")) - elapsed
-    else:
-        hours_expiry = _shelf_life_hours(batch, has_fridge) - hours_mfg
 
     volume = _batch_volume(batch)
     sell_through = _field(batch, "sell_through_rate", "sellThroughRate")
@@ -1262,7 +1433,7 @@ def _spoilage_features(vendor, batch, weather):
         "hoursOnShelf": hours_shelf,
         "sellThroughRate": float(sell_through),
         "effectiveTemperatureExposure": (fridge if has_fridge else ambient) * hours_mfg,
-        "hoursToExpiry": max(0.0, hours_expiry),
+        "hoursToExpiry": max(0.0, _hours_to_expiry(vendor, batch)),
         "volumeKg": volume,
         "vendorRating": float(_field(vendor, "rating", "vendor_rating", "vendorRating", default=4.0)),
     }
@@ -1272,7 +1443,10 @@ def _batch_evaluation(vendor, batch, weather):
     """Stock state of a held batch plus its model spoilage risk (0-100)."""
     remaining = _batch_remaining(batch)
     threshold = _batch_threshold(batch)
+    hours_left = _hours_to_expiry(vendor, batch)
     row = {
+        "hours_to_expiry": round(hours_left, 1),
+        "expired": hours_left <= 0,
         "batch_id": batch.get("batch_id"),
         "product_name": _field(batch, "product_name", "product_id", default="Batter"),
         "status": batch.get("status"),
@@ -1298,7 +1472,8 @@ def _batch_evaluation(vendor, batch, weather):
         "risk_score": score,
         "risk_label": label,
         "probabilities": {k: round(v, 3) for k, v in prob.items()},
-        "action": RISK_ACTIONS[label],
+        # /orders refuses expired stock, so say so instead of "sell first".
+        "action": "Expired: do not sell, return or discard" if row["expired"] else RISK_ACTIONS[label],
     }
 
 
@@ -1584,6 +1759,9 @@ def create_order(data: dict = Body(...)):
     if product and not data.get("batch_id"):
         batches = [b for b in batches if product in (b.get("product_id"), b.get("product_name"))
                    or _product_key(product) == _product_key(_field(b, "product_name", "product_id"))]
+    # Expired batter is never sold; it stays on the batch list until returned.
+    expired = [b for b in batches if _hours_to_expiry(vendor, b) <= 0]
+    batches = [b for b in batches if b not in expired]
     # First-expiring (else oldest) batch sells first.
     def fefo(batch):
         when = _field(batch, "expires_at", "manufactured_at", "mfgTimestamp")
@@ -1591,7 +1769,8 @@ def create_order(data: dict = Body(...)):
     batches.sort(key=fefo)
     available = sum(_batch_remaining(b) for b in batches)
     if not batches or available < quantity:
-        return {"error": f"Only {round(available, 2)} kg available"}
+        note = f" ({round(sum(_batch_remaining(b) for b in expired), 2)} kg more has expired)" if expired else ""
+        return {"error": f"Only {round(available, 2)} kg available{note}"}
 
     now = datetime.datetime.utcnow()
     left, deductions, alerts = quantity, [], []

@@ -1,3 +1,4 @@
+import json
 import joblib
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -16,7 +17,8 @@ from sklearn.metrics import (
 )
 
 DATA_FILE = "b2p_spoilage_risk_data.csv"
-MODEL_FILE = "spoilage_risk_model.pkl"
+# Written straight into the folder the backend loads models from.
+MODEL_FILE = "../models/spoilage_risk_model.pkl"
 RANDOM_STATE = 42
 
 df = pd.read_csv(DATA_FILE)
@@ -119,4 +121,22 @@ bundle = {
     "label_encoder": label_encoder
 }
 joblib.dump(bundle, MODEL_FILE)
-print(f"Saved model to {MODEL_FILE}")
+
+with open("spoilage_metrics.json", "w") as f:
+    json.dump({
+        "model": {
+            "Accuracy": round(float(accuracy_score(y_test, y_pred)), 4),
+            "Balanced_Accuracy": round(float(balanced_accuracy_score(y_test, y_pred)), 4),
+            "Macro_F1": round(float(f1_score(y_test, y_pred, average="macro")), 4),
+        },
+        "baseline": {
+            "Accuracy": round(float(accuracy_score(y_test, baseline_pred)), 4),
+            "Macro_F1": round(float(f1_score(y_test, baseline_pred, average="macro")), 4),
+        },
+        "best_cv_macro_f1": round(float(search.best_score_), 4),
+        "per_class": classification_report(y_test, y_pred, target_names=class_names, output_dict=True),
+        "confusion_matrix": {"labels": class_names, "rows": cm.tolist()},
+        "best_params": best_params,
+    }, f, indent=2)
+
+print(f"Saved model to {MODEL_FILE} and spoilage_metrics.json")
