@@ -20,12 +20,36 @@ import {
   ShoppingCart,
   Eye,
   EyeOff,
-  Boxes
+  Boxes,
+  CalendarDays,
+  Bell,
+  LogOut
 } from "lucide-react";
 
 import "./App.css";
 
-const API = "http://localhost:5000";
+// Set VITE_API_URL in admin-web/.env to reach a backend that is not on this machine.
+const API = (import.meta.env.VITE_API_URL || "http://localhost:5000").replace(/\/+$/, "");
+
+// The admin token lives in this browser only; a missing or expired one shows the login screen.
+const TOKEN_KEY = "b2p.admin.token";
+const readToken = () => {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+};
+const saveToken = (value) => {
+  try {
+    if (value) localStorage.setItem(TOKEN_KEY, value);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // Storage blocked: the session lasts until the tab closes.
+  }
+};
+let authToken = readToken();
+let onSignedOut = () => {};
 
 const getValue = (obj, keys, fallback = "") => {
   for (const key of keys) {
@@ -42,9 +66,15 @@ const vendorStatus = (vendor) =>
 const reorderLevel = (item) =>
   Number(getValue(item, ["reorder_level", "minimumStock", "minimum_stock", "threshold"], 10));
 
+// The backend stores UTC without a zone ("2026-10-18T05:48:05"); read it as UTC, not local time.
+const parseServerDate = (value) => {
+  const text = String(value);
+  return new Date(/T[\d:.]+$/.test(text) ? `${text}Z` : text);
+};
+
 const formatDate = (value) => {
   if (!value) return "-";
-  const date = new Date(value);
+  const date = parseServerDate(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 };
 
@@ -83,11 +113,18 @@ const statusClass = (status) => {
 
 async function request(url, options = {}) {
   const response = await fetch(`${API}${url}`, {
+    ...options,
     headers: {
-      "Content-Type": "application/json"
-    },
-    ...options
+      "Content-Type": "application/json",
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {})
+    }
   });
+
+  if (response.status === 401 && authToken) {
+    authToken = "";
+    saveToken("");
+    onSignedOut();
+  }
 
   if (!response.ok) {
     let message = `Request failed: ${response.status}`;
@@ -116,6 +153,7 @@ function Sidebar({ page, setPage, open, setOpen, demands }) {
       title: "Management",
       links: [
         ["vendors", "Vendors", Store],
+        ["products", "Products", Package],
         ["batches", "Batches", Boxes],
         ["inventory", "Inventory", Warehouse]
       ]
@@ -123,14 +161,17 @@ function Sidebar({ page, setPage, open, setOpen, demands }) {
     {
       title: "Operations",
       links: [
-        ["demands", "Batch Requests", FileText]
+        ["demands", "Batch Requests", FileText],
+        ["orders", "Orders", ShoppingCart],
+        ["alerts", "Stock Alerts", Bell]
       ]
     },
     {
       title: "AI Intelligence",
       links: [
         ["forecast", "Demand Forecast", TrendingUp],
-        ["spoilage", "Spoilage Risk", ShieldAlert]
+        ["spoilage", "Spoilage Risk", ShieldAlert],
+        ["festivals", "Festival Calendar", CalendarDays]
       ]
     },
     {
@@ -184,7 +225,7 @@ function Sidebar({ page, setPage, open, setOpen, demands }) {
           <div className="backend-dot" />
           <div>
             <strong>Backend Connected</strong>
-            <span>localhost:5000</span>
+            <span>{API.replace(/^https?:\/\//, "")}</span>
           </div>
         </div>
       </aside>
@@ -192,7 +233,7 @@ function Sidebar({ page, setPage, open, setOpen, demands }) {
   );
 }
 
-function Topbar({ title, setOpen }) {
+function Topbar({ title, setOpen, onSignOut }) {
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -210,6 +251,10 @@ function Topbar({ title, setOpen }) {
         <span className="online-dot" />
         <span>System Online</span>
         <strong>{title}</strong>
+        <button className="secondary-btn small-btn" onClick={onSignOut}>
+          <LogOut size={13} />
+          Sign out
+        </button>
       </div>
     </header>
   );
@@ -427,7 +472,27 @@ function SnapshotRow({ icon: Icon, label, value }) {
   );
 }
 
-function Vendors({ vendors, search, setSearch }) {
+function Vendors({ vendors, search, setSearch, refresh }) {
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState("");
+
+  const setStatus = async (vendor, status) => {
+    const id = getValue(vendor, ["vendor_id", "_id"], "");
+    try {
+      setBusy(id);
+      const data = await request(`/vendors/${id}/status`, {
+        method: "POST",
+        body: JSON.stringify({ status })
+      });
+      setMessage(data.error || data.message);
+      await refresh();
+    } catch (error) {
+      setMessage(error.message || "Unable to update vendor.");
+    } finally {
+      setBusy("");
+    }
+  };
+
   const filtered = vendors.filter((vendor) =>
     JSON.stringify(vendor).toLowerCase().includes(search.toLowerCase())
   );
@@ -439,6 +504,13 @@ function Vendors({ vendors, search, setSearch }) {
       search={search}
       setSearch={setSearch}
     >
+      {message && (
+        <div className="alert alert-warning">
+          <AlertTriangle size={16} />
+          {message}
+        </div>
+      )}
+
       <div className="table-card">
         <div className="table-wrapper">
           <table>
@@ -449,6 +521,7 @@ function Vendors({ vendors, search, setSearch }) {
                 <th>Email</th>
                 <th>Phone</th>
                 <th>Status</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -477,6 +550,40 @@ function Vendors({ vendors, search, setSearch }) {
                       <span className={statusClass(status)}>
                         {formatStatus(status)}
                       </span>
+                    </td>
+                    <td>
+                      <div className="action-buttons">
+                        {status !== "active" && (
+                          <button
+                            className="primary-btn small-btn"
+                            disabled={busy === getValue(vendor, ["vendor_id", "_id"], "")}
+                            onClick={() => setStatus(vendor, "active")}
+                          >
+                            <CheckCircle2 size={13} />
+                            Approve
+                          </button>
+                        )}
+                        {status === "pending" && (
+                          <button
+                            className="secondary-btn small-btn"
+                            disabled={busy === getValue(vendor, ["vendor_id", "_id"], "")}
+                            onClick={() => setStatus(vendor, "rejected")}
+                          >
+                            <X size={13} />
+                            Reject
+                          </button>
+                        )}
+                        {status === "active" && (
+                          <button
+                            className="secondary-btn small-btn"
+                            disabled={busy === getValue(vendor, ["vendor_id", "_id"], "")}
+                            onClick={() => setStatus(vendor, "suspended")}
+                          >
+                            <X size={13} />
+                            Suspend
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -938,6 +1045,8 @@ function VendorSelect({ vendors, vendorId, onChange, onRefresh, loading, label, 
 function DemandForecast({ vendors }) {
   const [vendorId, setVendorId] = useState("");
   const [forecast, setForecast] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [windowLabel, setWindowLabel] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -952,6 +1061,8 @@ function DemandForecast({ vendors }) {
       setMessage("");
       const data = await request(`/vendors/${id}/demand-forecast`);
       setForecast(data.forecast || []);
+      setSummary(data.summary || null);
+      setWindowLabel(data.window ? `${data.window.label} of ${data.window.date}` : "");
       setMessage(data.error || data.message || "");
     } catch (error) {
       setForecast([]);
@@ -961,16 +1072,12 @@ function DemandForecast({ vendors }) {
     }
   };
 
-  const totals = forecast.reduce(
-    (acc, item) => {
-      acc.predicted += Number(item.predicted_demand || 0);
-      acc.recStock += Number(item.recommended_stock || 0);
-      acc.stock += Number(item.current_stock || 0);
-      acc.refill += Number(item.refill_quantity || 0);
-      return acc;
-    },
-    { predicted: 0, recStock: 0, stock: 0, refill: 0 }
-  );
+  const totals = {
+    predicted: Number(summary?.predicted_demand || 0),
+    stock: Number(summary?.current_stock || 0),
+    requested: Number(summary?.requested_kg || 0),
+    refill: Number(summary?.refill_quantity || 0)
+  };
 
   return (
     <div className="ai-page">
@@ -981,7 +1088,7 @@ function DemandForecast({ vendors }) {
           </div>
           <div>
             <h1>Demand Forecast</h1>
-            <p>Predicted demand for the products each vendor holds, and the refill they need</p>
+            <p>Expected sales per sales window for every product, and the restock each vendor needs</p>
           </div>
         </div>
       </div>
@@ -996,7 +1103,7 @@ function DemandForecast({ vendors }) {
         onRefresh={() => loadForecast()}
         loading={loading}
         label="Select Vendor"
-        description="Only products with batches assigned to the vendor are forecast."
+        description="Shops with no sales yet get a baseline from location, weather and festivals; it adapts after a week of sales."
         refreshLabel="Refresh Forecast"
       />
 
@@ -1008,14 +1115,14 @@ function DemandForecast({ vendors }) {
       )}
 
       <div className="ai-stats-grid">
-        <AIStat icon={TrendingUp} title="Predicted Demand" value={totals.predicted.toFixed(1)} text="kg" />
-        <AIStat icon={ShoppingCart} title="Rec. Stock" value={totals.recStock.toFixed(1)} text="demand + safety" />
-        <AIStat icon={Package} title="Current Stock" value={totals.stock.toFixed(1)} text="kg in batches" />
+        <AIStat icon={TrendingUp} title="Total Demand" value={totals.predicted.toFixed(1)} text={`kg, ${windowLabel || "this window"}`} />
+        <AIStat icon={Package} title="Sellable Stock" value={totals.stock.toFixed(1)} text="kg, unexpired" />
+        <AIStat icon={ShoppingCart} title="Requested" value={totals.requested.toFixed(1)} text="kg in pending requests" />
         <AIStat
           icon={AlertTriangle}
-          title="Refill Needed"
+          title="To Restock"
           value={totals.refill.toFixed(1)}
-          text="kg"
+          text={`kg across ${summary?.products_to_restock || 0} product(s)`}
           danger={totals.refill > 0}
         />
       </div>
@@ -1025,8 +1132,8 @@ function DemandForecast({ vendors }) {
       ) : forecast.length === 0 && !loading ? (
         <AIEmpty
           icon={TrendingUp}
-          title="No batches assigned"
-          text="This vendor holds no batches, so there is nothing to forecast."
+          title="No forecast"
+          text="The demand model is not available right now."
         />
       ) : (
         <>
@@ -1034,7 +1141,7 @@ function DemandForecast({ vendors }) {
             <div className="ai-card-header">
               <div>
                 <h3>Demand &amp; Refill</h3>
-                <p>Stock ≥ demand: no restock. Stock &lt; demand: refill = deficit + safety stock.</p>
+                <p>Restock = demand + safety stock − sellable stock − already requested.</p>
               </div>
             </div>
 
@@ -1046,11 +1153,12 @@ function DemandForecast({ vendors }) {
                     <th>Demand</th>
                     <th>Safety Stock</th>
                     <th>Rec. Stock</th>
-                    <th>Current Stock</th>
-                    <th>Deficit</th>
-                    <th>Refill</th>
+                    <th>Stock</th>
+                    <th>Requested</th>
+                    <th>Restock</th>
                     <th>Status</th>
-                    <th>Active Batches</th>
+                    <th>Held Batches</th>
+                    <th>Batches to Assign</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1058,19 +1166,19 @@ function DemandForecast({ vendors }) {
                     <tr key={item.product_name || index}>
                       <td>
                         <strong>{item.product_name || "-"}</strong>
-                        {item.has_sales_history === false && (
-                          <div className="ai-selector-description">cold start (no sales history)</div>
+                        {item.history_source === "baseline" && (
+                          <div className="ai-selector-description">baseline (no sales yet)</div>
                         )}
                       </td>
                       <td>{Number(item.predicted_demand).toFixed(1)}</td>
                       <td>{Number(item.safety_stock).toFixed(1)}</td>
                       <td><strong>{Number(item.recommended_stock).toFixed(1)}</strong></td>
                       <td>{Number(item.current_stock).toFixed(1)}</td>
-                      <td>{Number(item.deficit).toFixed(1)}</td>
+                      <td>{Number(item.requested_kg || 0).toFixed(1)}</td>
                       <td><strong>{Number(item.refill_quantity).toFixed(1)}</strong></td>
                       <td>
                         <span className={item.restock_needed ? "status status-danger" : "status status-success"}>
-                          {item.restock_needed ? "Restock Needed" : "No Restock Needed"}
+                          {item.status}
                         </span>
                       </td>
                       <td>
@@ -1082,9 +1190,23 @@ function DemandForecast({ vendors }) {
                               title={`${batch.batch_id} · ${batch.remaining_kg} kg · ${formatStatus(batch.status)} · ${formatDate(batch.received_at)}`}
                             >
                               <strong>{batch.batch_id}</strong>
-                              <span>{batch.remaining_kg} kg · {formatDate(batch.received_at)}</span>
+                              <span>{batch.remaining_kg} kg · {batch.expired ? "expired" : formatDate(batch.received_at)}</span>
                             </span>
                           ))}
+                        </div>
+                      </td>
+                      <td>
+                        <div className="batch-chips">
+                          {(item.suggested_batches || []).map((batch) => (
+                            <span key={batch.batch_id} className="batch-chip">
+                              <strong>{batch.batch_id}</strong>
+                              <span>{batch.remaining_kg} kg</span>
+                            </span>
+                          ))}
+                          {item.uncovered_kg > 0 && (
+                            <span className="ai-selector-description">{item.uncovered_kg} kg not yet produced</span>
+                          )}
+                          {!item.restock_needed && "-"}
                         </div>
                       </td>
                     </tr>
@@ -1304,7 +1426,328 @@ function PageLayout({ title, subtitle, search, setSearch, children }) {
   );
 }
 
+function Login({ onLogin }) {
+  const [form, setForm] = useState({ login: "", password: "" });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    try {
+      setBusy(true);
+      setError("");
+      const data = await request("/login", { method: "POST", body: JSON.stringify(form) });
+      if (data.role !== "admin") throw new Error("This account is not an admin account.");
+      onLogin(data.token);
+    } catch (error) {
+      setError(error.message || "Unable to sign in.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="loading-screen">
+      <form className="form-card login-card" onSubmit={submit}>
+        <div className="form-card-title">
+          <h3>B2P Manufacturer Portal</h3>
+          <p>Sign in with an admin account</p>
+        </div>
+
+        {error && (
+          <div className="alert alert-warning">
+            <AlertTriangle size={16} />
+            {error}
+          </div>
+        )}
+
+        <FormField label="Email or phone" wide>
+          <input autoComplete="username" value={form.login}
+            onChange={(e) => setForm((prev) => ({ ...prev, login: e.target.value }))} />
+        </FormField>
+        <FormField label="Password" wide>
+          <input type="password" autoComplete="current-password" value={form.password}
+            onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))} />
+        </FormField>
+
+        <div className="form-actions">
+          <button className="primary-btn" type="submit" disabled={busy || !form.login || !form.password}>
+            Sign in
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// The catalog is fixed to the three products the demand model was trained on,
+// so this page only shows them; batches are created from these on the Batches page.
+function Products({ products, search, setSearch }) {
+  const filtered = products.filter((product) =>
+    JSON.stringify(product).toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <PageLayout
+      title="Products"
+      subtitle="Idli, Dosa and Combo: the products the forecast model knows. Shelf life sets batch expiry."
+      search={search}
+      setSearch={setSearch}
+    >
+
+      <div className="table-card">
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Product ID</th>
+                <th>Name</th>
+                <th>Category</th>
+                <th>Fridge shelf life</th>
+                <th>Room shelf life</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((product, index) => (
+                <tr key={product._id || index}>
+                  <td><strong>{product.product_id}</strong></td>
+                  <td>{product.product_name}</td>
+                  <td>{product.category || "-"}</td>
+                  <td>{getValue(product, ["shelf_life_fridge_hrs", "shelf_life_hours"], "-")} h</td>
+                  <td>{getValue(product, ["shelf_life_ambient_hrs"], "-")} h</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filtered.length === 0 && <div className="empty-state">No products found.</div>}
+        </div>
+      </div>
+    </PageLayout>
+  );
+}
+
+// Loads one admin list endpoint for a page that owns its data.
+function useList(url, key) {
+  const [items, setItems] = useState([]);
+  const [message, setMessage] = useState("");
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    let live = true;
+    request(url)
+      .then((data) => live && setItems(data[key] || []))
+      .catch((error) => live && setMessage(error.message || "Unable to load."));
+    return () => {
+      live = false;
+    };
+  }, [url, key, version]);
+  return { items, reload: () => setVersion((v) => v + 1), message, setMessage };
+}
+
+function Orders({ search, setSearch }) {
+  const { items: orders, message } = useList("/orders", "orders");
+  const filtered = orders.filter((order) => JSON.stringify(order).toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <PageLayout title="Orders" subtitle="Customer purchases and recorded shop sales" search={search} setSearch={setSearch}>
+      {message && (
+        <div className="alert alert-warning">
+          <AlertTriangle size={16} />
+          {message}
+        </div>
+      )}
+      <div className="table-card">
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Order</th>
+                <th>Date</th>
+                <th>Vendor</th>
+                <th>Product</th>
+                <th>Quantity</th>
+                <th>Customer</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((order, index) => {
+                const status = getValue(order, ["order_status", "status"], "-");
+                return (
+                  <tr key={order._id || index}>
+                    <td><strong>{getValue(order, ["order_id", "_id"], "-")}</strong></td>
+                    <td>{formatDate(getValue(order, ["order_date", "created_at"], ""))}</td>
+                    <td>{order.vendor_id || "-"}</td>
+                    <td>{getValue(order, ["product_name"], order.order_type === "restock" ? "Restock request" : "-")}</td>
+                    <td>{order.quantity_kg !== undefined ? `${order.quantity_kg} kg` : "-"}</td>
+                    <td>{order.user_id || "-"}</td>
+                    <td><span className={statusClass(status)}>{formatStatus(status)}</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {filtered.length === 0 && <div className="empty-state">No orders found.</div>}
+        </div>
+      </div>
+    </PageLayout>
+  );
+}
+
+function Alerts({ search, setSearch }) {
+  const { items: alerts, message } = useList("/inventory-alerts", "alerts");
+  const filtered = alerts.filter((alert) => JSON.stringify(alert).toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <PageLayout
+      title="Stock Alerts"
+      subtitle="Raised when a sale takes a batch below its low-stock level. Each clears itself once the shop receives a new batch of that product (assign one from Batch Requests) or returns the batch."
+      search={search}
+      setSearch={setSearch}
+    >
+      {message && (
+        <div className="alert alert-warning">
+          <AlertTriangle size={16} />
+          {message}
+        </div>
+      )}
+      <div className="table-card">
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Raised</th>
+                <th>Vendor</th>
+                <th>Batch</th>
+                <th>Message</th>
+                <th>Status</th>
+                <th>Cleared by</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((alert, index) => (
+                <tr key={alert._id || index}>
+                  <td>{formatDate(alert.generated_time)}</td>
+                  <td>{alert.vendor_id || "-"}</td>
+                  <td>{alert.batch_id || "-"}</td>
+                  <td>{alert.alert_message || formatStatus(alert.alert_type)}</td>
+                  <td>
+                    <span className={alert.alert_status === "active" ? "status status-danger" : statusClass(alert.alert_status)}>
+                      {formatStatus(alert.alert_status)}
+                    </span>
+                  </td>
+                  <td>{alert.alert_status === "active" ? "Waiting for new stock" : alert.resolved_by || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filtered.length === 0 && <div className="empty-state">No stock alerts.</div>}
+        </div>
+      </div>
+    </PageLayout>
+  );
+}
+
+function Festivals({ search, setSearch }) {
+  const { items: festivals, reload, message, setMessage } = useList("/festival-calendar", "festivals");
+  const empty = { date: "", festivalType: "publicHoliday", windowDays: "1", festivalName: "", region: "Tamil Nadu" };
+  const [form, setForm] = useState(empty);
+  const update = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
+
+  const save = async () => {
+    if (!form.date || !form.festivalName.trim()) {
+      setMessage("Date and festival name are required.");
+      return;
+    }
+    try {
+      const data = await request("/festival-calendar", {
+        method: "POST",
+        body: JSON.stringify({ ...form, windowDays: Number(form.windowDays) })
+      });
+      setMessage(data.error || `${form.festivalName} saved.`);
+      if (!data.error) setForm(empty);
+      reload();
+    } catch (error) {
+      setMessage(error.message || "Unable to save festival.");
+    }
+  };
+
+  const filtered = festivals.filter((festival) => JSON.stringify(festival).toLowerCase().includes(search.toLowerCase()));
+
+  return (
+    <PageLayout title="Festival Calendar" subtitle="Festival windows raise the demand forecast" search={search} setSearch={setSearch}>
+      {message && (
+        <div className="alert alert-warning">
+          <AlertTriangle size={16} />
+          {message}
+        </div>
+      )}
+
+      <div className="form-card">
+        <div className="form-card-title">
+          <h3>Add Festival</h3>
+          <p>Only the two festival types the demand model was trained on can be used.</p>
+        </div>
+        <div className="form-grid">
+          <FormField label="Date">
+            <input type="date" value={form.date} onChange={(e) => update("date", e.target.value)} />
+          </FormField>
+          <FormField label="Name">
+            <input value={form.festivalName} placeholder="Pongal" onChange={(e) => update("festivalName", e.target.value)} />
+          </FormField>
+          <FormField label="Type">
+            <select value={form.festivalType} onChange={(e) => update("festivalType", e.target.value)}>
+              <option value="harvestFestival">Harvest festival</option>
+              <option value="publicHoliday">Public holiday</option>
+            </select>
+          </FormField>
+          <FormField label="Window (days)">
+            <input type="number" min="1" max="31" value={form.windowDays} onChange={(e) => update("windowDays", e.target.value)} />
+          </FormField>
+          <FormField label="Region">
+            <input value={form.region} onChange={(e) => update("region", e.target.value)} />
+          </FormField>
+        </div>
+        <div className="form-actions">
+          <button className="primary-btn" onClick={save}>
+            <CalendarDays size={15} />
+            Save Festival
+          </button>
+        </div>
+      </div>
+
+      <div className="table-card">
+        <div className="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Window</th>
+                <th>Region</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((festival, index) => (
+                <tr key={festival._id || index}>
+                  <td>{festival.date ? parseServerDate(festival.date).toLocaleDateString() : "-"}</td>
+                  <td><strong>{festival.festivalName || "-"}</strong></td>
+                  <td>{formatStatus(festival.festivalType)}</td>
+                  <td>{festival.windowDays} day(s)</td>
+                  <td>{festival.region || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filtered.length === 0 && <div className="empty-state">No festivals saved.</div>}
+        </div>
+      </div>
+    </PageLayout>
+  );
+}
+
 function App() {
+  const [signedIn, setSignedIn] = useState(Boolean(authToken));
   const [page, setPage] = useState("dashboard");
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -1389,8 +1832,15 @@ function App() {
   };
 
   useEffect(() => {
-    loadData();
-  }, []);
+    onSignedOut = () => setSignedIn(false);
+    if (signedIn) loadData();
+  }, [signedIn]);
+
+  const signOut = () => {
+    authToken = "";
+    saveToken("");
+    setSignedIn(false);
+  };
 
   useEffect(() => {
     setSearch("");
@@ -1401,15 +1851,32 @@ function App() {
       dashboard: "Dashboard",
       vendors: "Vendors",
       batches: "Batches",
+      products: "Products",
       inventory: "Inventory",
       demands: "Batch Requests",
+      orders: "Orders",
+      alerts: "Stock Alerts",
       forecast: "Demand Forecast",
       spoilage: "Spoilage Risk",
+      festivals: "Festival Calendar",
       activity: "Activity"
     };
 
     return titles[page] || "Dashboard";
   }, [page]);
+
+  if (!signedIn) {
+    return (
+      <Login
+        onLogin={(token) => {
+          authToken = token;
+          saveToken(token);
+          setLoading(true);
+          setSignedIn(true);
+        }}
+      />
+    );
+  }
 
   if (loading) {
     return (
@@ -1433,7 +1900,7 @@ function App() {
       />
 
       <main className="main">
-        <Topbar title={pageTitle} setOpen={setMobileOpen} />
+        <Topbar title={pageTitle} setOpen={setMobileOpen} onSignOut={signOut} />
 
         <div className="content">
           {page === "dashboard" && (
@@ -1453,6 +1920,7 @@ function App() {
               vendors={vendors}
               search={search}
               setSearch={setSearch}
+              refresh={loadData}
             />
           )}
 
@@ -1465,6 +1933,16 @@ function App() {
               refresh={loadData}
             />
           )}
+
+          {page === "products" && (
+            <Products products={products} search={search} setSearch={setSearch} />
+          )}
+
+          {page === "orders" && <Orders search={search} setSearch={setSearch} />}
+
+          {page === "alerts" && <Alerts search={search} setSearch={setSearch} />}
+
+          {page === "festivals" && <Festivals search={search} setSearch={setSearch} />}
 
           {page === "inventory" && (
             <Inventory

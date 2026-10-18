@@ -74,6 +74,22 @@ export default function BatchesScreen() {
     }
   };
 
+  const sendBack = async (batch: VendorBatch) => {
+    const id = String(batch.batch_id ?? "");
+    try {
+      setBusyId(id);
+      setNotice(null);
+      const reason = batch.expired ? "expired" : `spoilage risk ${String(batch.risk_label ?? "").toLowerCase()}`;
+      const result = await api.returnBatch(vendorId, id, reason);
+      setNotice({ type: "success", text: result.message ?? "Batch returned." });
+      await load();
+    } catch (caught) {
+      setNotice({ type: "error", text: messageOf(caught) });
+    } finally {
+      setBusyId("");
+    }
+  };
+
   if (loading) {
     return <LoadingScreen label="Loading batches..." />;
   }
@@ -151,8 +167,8 @@ export default function BatchesScreen() {
                     <Text style={styles.meta}>Batch {id}</Text>
                   </View>
                   <StatusPill
-                    status={assigned ? "pending" : "active"}
-                    label={assigned ? "Awaiting your confirmation" : "In store"}
+                    status={assigned ? "pending" : batch.expired ? "rejected" : "active"}
+                    label={assigned ? "Awaiting your confirmation" : batch.expired ? "Expired" : "In store"}
                   />
                 </View>
 
@@ -163,6 +179,8 @@ export default function BatchesScreen() {
                   color={batch.low_stock ? colors.danger : colors.primary}
                 />
                 <Text style={styles.meta}>Alert threshold {Number(batch.threshold_kg ?? 0)} kg</Text>
+
+                {batch.action ? <Text style={styles.meta}>{batch.action}</Text> : null}
 
                 {batch.risk_score !== undefined ? (
                   <BarMeter
@@ -180,6 +198,16 @@ export default function BatchesScreen() {
                     loading={busyId === id}
                     icon={<MaterialCommunityIcons name="check-circle-outline" size={13} color="#fff" />}
                     onPress={() => void receive(id)}
+                  />
+                ) : batch.expired ? (
+                  // Expired stock cannot be sold (the backend refuses it), only sent back.
+                  <Button
+                    label="Return batch"
+                    tone="danger"
+                    compact
+                    loading={busyId === id}
+                    icon={<MaterialCommunityIcons name="keyboard-return" size={13} color={colors.danger} />}
+                    onPress={() => void sendBack(batch)}
                   />
                 ) : (
                   <View style={styles.saleRow}>

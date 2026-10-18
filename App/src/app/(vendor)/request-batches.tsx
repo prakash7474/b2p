@@ -7,7 +7,7 @@ import { Card, EmptyState, SectionTitle } from "@/src/components/cards";
 import { Button, SecondaryButton } from "@/src/components/controls";
 import { LoadingScreen, Screen } from "@/src/components/layout";
 import { AlertBox, StatusPill } from "@/src/components/status";
-import { api, type AvailableBatch, type DemandRequest } from "@/src/lib/api";
+import { api, parseServerDate, type AvailableBatch, type DemandRequest } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
 import { colors, fonts } from "@/src/theme";
 
@@ -23,7 +23,7 @@ const REQUEST_LABELS: Record<string, string> = {
 
 function formatDate(value: unknown): string {
   if (!value) return "—";
-  const date = new Date(String(value));
+  const date = parseServerDate(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 

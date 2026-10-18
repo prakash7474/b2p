@@ -28,7 +28,6 @@ backend-smoke.err
 credit.txt
 test,py
 AGENTS.md
-App/
 seed.py
-backend/
 AGENTS.md
+db_backups/

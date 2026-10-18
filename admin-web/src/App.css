@@ -1184,3 +1184,7 @@ tbody tr:last-child td {
     align-items: flex-start;
   }
 }
+
+.login-card {
+  width: min(380px, calc(100vw - 32px));
+}

@@ -57,7 +57,7 @@ export function useLiveLocation() {
       setLocation(captured);
       return captured;
     } catch (caught) {
-      setError(messageOf(caught));
+      setError(positionErrorMessage(caught) ?? messageOf(caught));
       return null;
     } finally {
       setCapturing(false);
@@ -70,6 +70,24 @@ export function useLiveLocation() {
   }, []);
 
   return { location, error, capturing, capture, reset };
+}
+
+/**
+ * Browsers reject with a GeolocationPositionError ({ code, message }), which is not
+ * an Error instance, so without this the user only sees a generic failure.
+ */
+function positionErrorMessage(caught: unknown): string | null {
+  const code = (caught as { code?: unknown } | null)?.code;
+  if (code === 1) {
+    return "Location access is blocked for this site. Allow it from the icon left of the address bar, then reload.";
+  }
+  if (code === 2) {
+    return "This device could not work out its position (common on desktop Linux browsers). Set a location in Chrome DevTools → Sensors, or use the app on your phone.";
+  }
+  if (code === 3) {
+    return "Finding your location took too long. Move somewhere with better signal and try again.";
+  }
+  return null;
 }
 
 /** Best-effort reverse geocoding so the address field can be prefilled. */

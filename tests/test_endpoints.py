@@ -14,7 +14,7 @@ Run with:  pytest            (pytest.ini collects tests/ only)
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -80,10 +80,26 @@ def _empty_collections(db):
     yield
 
 
+ADMIN = {"sub": "U001", "role": "admin", "vendor_id": None}
+
+
 @pytest.fixture(scope="session")
 def client():
+    # Endpoint tests run as the admin; auth itself is tested with real tokens below.
+    main.app.dependency_overrides[main.current_user] = lambda: ADMIN
+    main.app.dependency_overrides[main.optional_user] = lambda: ADMIN
     with TestClient(main.app) as test_client:
         yield test_client
+    main.app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def no_auth_override():
+    """Run one test with real token checks instead of the admin override."""
+    saved = dict(main.app.dependency_overrides)
+    main.app.dependency_overrides.clear()
+    yield
+    main.app.dependency_overrides.update(saved)
 
 
 @pytest.fixture()
@@ -164,15 +180,27 @@ def seeded(db, _empty_collections):
 
 
 def raise_demand(client, vendor_id, items, priority=None):
-    """POST a demand and return its demand_id."""
-    payload = {"items": items}
-    if priority is not None:
-        payload["priority"] = priority
-    response = client.post(f"/vendors/{vendor_id}/demands", json=payload)
-    assert response.status_code == 200
-    body = response.json()
-    assert "demand_id" in body, body
-    return body["demand_id"]
+    """Store a pending product demand and return its demand_id.
+
+    The API now only takes batch requests, but product demands already in the
+    database still go through confirm + sync, so they are written here in the
+    shape the endpoint used to store (items enriched from the inventory row).
+    """
+    stored_items = []
+    for item in items:
+        row = main.COLS["inventory"].find_one({"vendor_id": vendor_id, "product_id": item["product_id"]})
+        stored_items.append({
+            "product_id": item["product_id"],
+            "product_name": row.get("product_name"),
+            "batch_number": row.get("batch_number"),
+            "inventory_id": row.get("inventory_id"),
+            "quantity": item["quantity"],
+        })
+    result = main.COLS["restock_requests"].insert_one({
+        "vendor_id": vendor_id, "items": stored_items, "priority": priority or "normal",
+        "status": "pending", "created_at": datetime.utcnow(),
+    })
+    return str(result.inserted_id)
 
 
 # ---------------------------------------------------------------------------
@@ -512,36 +540,21 @@ def test_get_demands_returns_vendor_restock_requests(client, seeded):
     assert all(isinstance(d["_id"], str) for d in body["demands"])
 
 
-def test_create_demand_maps_inventory_fields(client, seeded):
-    demand_id = raise_demand(
-        client, ACTIVE_VENDOR,
-        items=[{"product_id": "P200", "quantity": 10}],
-        priority="high",
-    )
-
-    stored = seeded.restock_requests.find_one({"_id": ObjectId(demand_id)})
-    assert stored["vendor_id"] == ACTIVE_VENDOR
-    assert stored["status"] == "pending"
-    assert stored["priority"] == "high"
-    assert isinstance(stored["created_at"], datetime)
-    # demand items are enriched from the vendor's inventory row
-    assert stored["items"] == [
-        {
-            "inventory_id": "INV200",
-            "product_id": "P200",
-            "product_name": "Test Batter",
-            "batch_number": "BATCH-200",
-            "quantity": 10,
-        }
-    ]
+def test_create_demand_refuses_product_quantities(client, seeded):
+    # stock only reaches a shop as a batch, so a plain product quantity is refused
+    response = client.post(f"/vendors/{ACTIVE_VENDOR}/demands",
+                           json={"items": [{"product_id": "P200", "quantity": 10}]})
+    assert response.json() == {"error": "Request a specific batch from the available batches list"}
+    assert seeded.restock_requests.count_documents({}) == 3
 
 
-def test_create_demand_defaults_priority_to_normal(client, seeded):
-    demand_id = raise_demand(
-        client, ACTIVE_VENDOR, items=[{"product_id": "P200", "quantity": 1}]
-    )
+def test_create_demand_batch_request_defaults_priority_to_normal(client, seeded):
+    make_batch(seeded, "B-PRIO", status="available")
+    demand_id = client.post(f"/vendors/{ACTIVE_VENDOR}/demands",
+                            json={"items": [{"batch_id": "B-PRIO"}]}).json()["demand_id"]
     stored = seeded.restock_requests.find_one({"_id": ObjectId(demand_id)})
     assert stored["priority"] == "normal"
+    assert stored["items"][0]["batch_id"] == "B-PRIO"
 
 
 def test_create_demand_without_items(client, seeded):
@@ -551,24 +564,6 @@ def test_create_demand_without_items(client, seeded):
     response = client.post(f"/vendors/{ACTIVE_VENDOR}/demands", json={})
     assert response.json() == {"error": "No products selected"}
     assert seeded.restock_requests.count_documents({}) == 3
-
-
-def test_create_demand_unmapped_product(client, seeded):
-    response = client.post(
-        f"/vendors/{ACTIVE_VENDOR}/demands",
-        json={"items": [{"product_id": "P999", "quantity": 5}]},
-    )
-    assert response.json() == {"error": "Product P999 is not mapped"}
-    assert seeded.restock_requests.count_documents({}) == 3
-
-
-def test_create_demand_cannot_use_another_vendors_inventory(client, seeded):
-    # P200 exists in inventory, but only for V200 -- V201 must not map it
-    response = client.post(
-        f"/vendors/{PENDING_VENDOR}/demands",
-        json={"items": [{"product_id": "P200", "quantity": 2}]},
-    )
-    assert response.json() == {"error": "Product P200 is not mapped"}
 
 
 # ---------------------------------------------------------------------------
@@ -715,3 +710,207 @@ def test_sync_is_scoped_to_the_requested_vendor(client, seeded):
         for i in seeded.inventory.find({})
     }
     assert quantities == {"INV200": 35.0, "INV201": 10.0, "INV202": 8.0}
+
+
+# ---------------------------------------------------------------------------
+# auth: tokens, roles, vendor ownership
+# ---------------------------------------------------------------------------
+
+def bearer(user_id, role, vendor_id=None):
+    return {"Authorization": f"Bearer {main.issue_token(user_id, role, vendor_id)}"}
+
+
+def test_routes_reject_missing_or_forged_tokens(client, seeded, no_auth_override):
+    assert client.get("/users").status_code == 401
+    # re-encode the payload with role=admin but keep the vendor's signature
+    payload, signature = main.issue_token("U200", "vendor", ACTIVE_VENDOR).split(".")
+    claims = main.json.loads(main.base64.urlsafe_b64decode(payload))
+    forged = main.base64.urlsafe_b64encode(main.json.dumps({**claims, "role": "admin"}).encode()).decode()
+    assert client.get("/users", headers={"Authorization": f"Bearer {forged}.{signature}"}).status_code == 401
+    assert client.get("/", ).status_code == 200  # health check stays public
+
+
+def test_vendor_token_only_reaches_its_own_shop(client, seeded, no_auth_override):
+    headers = bearer("U200", "vendor", ACTIVE_VENDOR)
+    assert client.get(f"/vendors/{ACTIVE_VENDOR}/inventory", headers=headers).status_code == 200
+    assert client.get(f"/vendors/{PENDING_VENDOR}/inventory", headers=headers).status_code == 403
+    assert client.get("/users", headers=headers).status_code == 403
+    # a vendor listing restock requests only ever sees its own
+    body = client.get("/restock-requests", params={"vendor_id": PENDING_VENDOR}, headers=headers).json()
+    assert {r["vendor_id"] for r in body["restock_requests"]} == {ACTIVE_VENDOR}
+
+
+def test_login_returns_token_with_linked_vendor(client, seeded, no_auth_override):
+    seeded.users.insert_one({"user_id": "U200", "email": "Shop@Test.com", "phone": "999",
+                             "password_hash": main.hash_password("pw"), "role": "vendor", "is_verified": True})
+    # emails match case-insensitively
+    body = client.post("/login", json={"login": "shop@test.com", "password": "pw"}).json()
+    assert body["vendor_id"] == ACTIVE_VENDOR
+    headers = {"Authorization": f"Bearer {body['token']}"}
+    assert client.get(f"/vendors/{ACTIVE_VENDOR}/batches", headers=headers).status_code == 200
+
+
+def test_public_signup_cannot_self_approve(client, db, no_auth_override):
+    body = client.post("/vendors", json={"vendor_id": "V950", "shop_name": "Sneaky", "status": "active",
+                                         "email": "X@Y.com", "password": "pw"}).json()
+    assert body["vendor"]["status"] == "pending"
+    assert db.users.find_one({"user_id": "V950"})["email"] == "x@y.com"
+
+
+# ---------------------------------------------------------------------------
+# vendor approval, batch returns, expiry, all-or-nothing orders
+# ---------------------------------------------------------------------------
+
+def make_batch(db, batch_id, vendor_id=None, status="received", remaining=10.0, age_hours=1):
+    now = datetime.utcnow()
+    db.batches.insert_one({
+        "batch_id": batch_id, "vendor_id": vendor_id, "product_id": "P200", "product_name": "Test Batter",
+        "volume_kg": 10.0, "remaining_volume_kg": remaining, "status": status, "exposed": True,
+        "manufactured_at": now - timedelta(hours=age_hours), "created_at": now,
+    })
+
+
+def test_pending_vendor_cannot_request_batches_until_approved(client, seeded):
+    make_batch(seeded, "B-AV", status="available")
+    blocked = client.post(f"/vendors/{PENDING_VENDOR}/demands", json={"items": [{"batch_id": "B-AV"}]}).json()
+    assert "awaiting admin approval" in blocked["error"]
+
+    approved = client.post(f"/vendors/{PENDING_VENDOR}/status", json={"status": "active"}).json()
+    assert approved["status"] == "active"
+    assert seeded.vendors.find_one({"vendor_id": PENDING_VENDOR})["verificationStatus"] == "active"
+    assert "demand_id" in client.post(f"/vendors/{PENDING_VENDOR}/demands",
+                                      json={"items": [{"batch_id": "B-AV"}]}).json()
+
+
+def test_return_batch_removes_stock_and_logs_movement(client, seeded):
+    make_batch(seeded, "B-RET", vendor_id=ACTIVE_VENDOR, remaining=4.0)
+    body = client.post(f"/vendors/{ACTIVE_VENDOR}/batches/B-RET/return", json={"reason": "expired"}).json()
+    assert body == {"message": "Batch returned", "batch_id": "B-RET", "returned_kg": 4.0, "status": "returned"}
+    batch = seeded.batches.find_one({"batch_id": "B-RET"})
+    assert (batch["status"], batch["remaining_volume_kg"], batch["returned_kg"]) == ("returned", 0, 4.0)
+    assert seeded.inventory.find_one({"inventory_id": "INV200"})["quantity"] == 31.0  # 35 - 4
+    assert seeded.inventory_movement.find_one({"batchId": "B-RET"})["movementType"] == "return"
+    # a returned batch is no longer held, so it cannot be returned twice
+    again = client.post(f"/vendors/{ACTIVE_VENDOR}/batches/B-RET/return", json={}).json()
+    assert "not held" in again["error"]
+
+
+def test_order_skips_expired_batches(client, seeded):
+    make_batch(seeded, "B-OLD", vendor_id=ACTIVE_VENDOR, remaining=6.0, age_hours=200)
+    make_batch(seeded, "B-NEW", vendor_id=ACTIVE_VENDOR, remaining=2.0)
+    body = client.post("/orders", json={"vendor_id": ACTIVE_VENDOR, "quantity_kg": 5}).json()
+    assert body["error"] == "Only 2.0 kg available (6.0 kg more has expired)"
+    assert seeded.batches.find_one({"batch_id": "B-OLD"})["remaining_volume_kg"] == 6.0
+
+
+def test_order_rolls_back_when_a_batch_changes_mid_sale(client, seeded, monkeypatch):
+    make_batch(seeded, "B-1", vendor_id=ACTIVE_VENDOR, remaining=3.0, age_hours=5)
+    make_batch(seeded, "B-2", vendor_id=ACTIVE_VENDOR, remaining=3.0, age_hours=2)
+    real = main.COLS["batches"]
+
+    class LosesSecondBatch:
+        """Delegates to the real collection, but the sale's write to B-2 hits a stale lock."""
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def update_one(self, query, update, **kwargs):
+            if query.get("_id") == real.find_one({"batch_id": "B-2"})["_id"] and "updated_at" in query \
+                    and update.get("$set", {}).get("remaining_volume_kg") == 1.0:
+                query = {**query, "updated_at": "someone-else-changed-it"}
+            return real.update_one(query, update, **kwargs)
+
+    monkeypatch.setitem(main.COLS, "batches", LosesSecondBatch())
+    body = client.post("/orders", json={"vendor_id": ACTIVE_VENDOR, "quantity_kg": 5}).json()
+
+    assert "please retry" in body["error"]
+    assert seeded.batches.find_one({"batch_id": "B-1"})["remaining_volume_kg"] == 3.0  # put back
+    assert seeded.batches.find_one({"batch_id": "B-1"})["status"] == "received"
+    assert seeded.orders.count_documents({"order_id": {"$regex": "^ORD-"}}) == 0
+    assert seeded.inventory_movement.count_documents({}) == 0
+
+
+def test_restock_request_rejects_bad_items(client, seeded):
+    bad = client.post("/restock-requests", json={"vendor_id": ACTIVE_VENDOR,
+                                                 "items": [{"product_id": "P200", "quantity": -1}]}).json()
+    assert bad == {"error": "Each item needs a quantity greater than 0"}
+    assert seeded.restock_requests.count_documents({}) == 3
+
+
+def test_festival_calendar_accepts_only_trained_types(client, seeded):
+    bad = client.post("/festival-calendar", json={"date": "2027-01-15", "festivalType": "carnival"}).json()
+    assert "festivalType must be one of" in bad["error"]
+    ok = client.post("/festival-calendar", json={"date": "2027-01-15", "festivalType": "harvestFestival",
+                                                 "windowDays": 4, "festivalName": "Pongal"}).json()
+    assert ok["festival"]["festivalName"] == "Pongal"
+    assert client.get("/festival-calendar").json()["count"] == 1
+
+
+def test_vendor_sees_only_its_own_logs(client, seeded, no_auth_override):
+    seeded.logs.insert_many([{"action": "receive_batch", "vendor_id": ACTIVE_VENDOR},
+                             {"action": "receive_batch", "vendor_id": PENDING_VENDOR}])
+    body = client.get("/logs", headers=bearer("U200", "vendor", ACTIVE_VENDOR)).json()
+    assert {log["vendor_id"] for log in body["logs"]} == {ACTIVE_VENDOR}
+
+
+def test_catalog_only_takes_model_products_once(client, db):
+    body = client.post("/products", json={"product_id": "P003", "product_name": "Combo Pack",
+                                          "shelf_life_fridge_hrs": 54, "shelf_life_ambient_hrs": 18}).json()
+    assert (body["product"]["shelf_life_fridge_hrs"], body["product"]["shelf_life_ambient_hrs"]) == (54.0, 18.0)
+    # another spelling of the same product is a duplicate, and unknown products are refused
+    dup = client.post("/products", json={"product_id": "BATTER_P004", "product_name": "combo pack"}).json()
+    assert dup == {"error": "combo pack already exists as P003"}
+    rava = client.post("/products", json={"product_id": "P004", "product_name": "Rava Batter"}).json()
+    assert "Only Idli Batter, Dosa Batter and Combo Pack" in rava["error"]
+    bad = client.post("/products", json={"product_id": "P001", "product_name": "Idli Batter", "shelf_life_ambient_hrs": "soon"})
+    assert bad.json() == {"error": "shelf life hours must be numbers"}
+
+
+def test_receiving_fresh_stock_clears_that_products_alerts(client, seeded):
+    make_batch(seeded, "B-LOW", vendor_id=ACTIVE_VENDOR, remaining=1.0)
+    make_batch(seeded, "B-NEXT", vendor_id=ACTIVE_VENDOR, status="assigned")
+    seeded.inventory_alerts.insert_one({"alert_id": "ALT-1", "vendor_id": ACTIVE_VENDOR, "batch_id": "B-LOW",
+                                        "alert_status": "active"})
+    assert client.get("/inventory-alerts", params={"status": "active"}).json()["count"] == 1
+    client.post(f"/vendors/{ACTIVE_VENDOR}/batches/B-NEXT/receive")
+    alert = client.get("/inventory-alerts").json()["alerts"][0]
+    assert (alert["alert_status"], alert["resolved_by"]) == ("resolved", "received B-NEXT")
+    assert client.get("/orders").json()["count"] == 2
+
+
+def test_nearby_search_lists_only_fresh_sellable_stock(client, seeded):
+    seeded.vendors.update_one({"vendor_id": ACTIVE_VENDOR},
+                              {"$set": {"location_geo": {"type": "Point", "coordinates": [80.27, 13.08]}}})
+    main.COLS["vendors"].create_index([("location_geo", "2dsphere")])
+    make_batch(seeded, "B-FRESH", vendor_id=ACTIVE_VENDOR, remaining=4.0)
+    make_batch(seeded, "B-STALE", vendor_id=ACTIVE_VENDOR, remaining=9.0, age_hours=200)
+    vendors = client.get("/vendors", params={"latitude": 13.08, "longitude": 80.27}).json()["vendors"]
+    assert vendors[0]["available_inventory"] == [{"product_id": "P200", "product_name": "Test Batter", "quantity": 4.0}]
+
+
+def test_new_shop_gets_baseline_forecast_for_every_product(client, seeded):
+    seeded.products.insert_many([{"product_id": "P001", "product_name": "Idli Batter"},
+                                 {"product_id": "P002", "product_name": "Dosa Batter"},
+                                 {"product_id": "P003", "product_name": "Combo Pack"}])
+    now = datetime.utcnow()
+    seeded.batches.insert_one({"batch_id": "B-IDLI", "product_id": "P001", "product_name": "Idli Batter",
+                               "volume_kg": 15.0, "remaining_volume_kg": 15.0, "status": "available",
+                               "exposed": True, "manufactured_at": now, "created_at": now})
+
+    body = client.get(f"/vendors/{ACTIVE_VENDOR}/demand-forecast").json()
+    rows = {row["model_product"]: row for row in body["forecast"]}
+    assert set(rows) == {"Idly_Batter", "Dosa_Batter", "Combo_Pack"}
+    assert all(row["history_source"] == "baseline" for row in rows.values())
+    idli = rows["Idly_Batter"]
+    # nothing held or requested: restock is the whole demand + safety stock
+    assert idli["predicted_demand"] > 15 and idli["refill_quantity"] == idli["recommended_stock"]
+    assert [b["batch_id"] for b in idli["suggested_batches"]] == ["B-IDLI"]
+    assert idli["uncovered_kg"] == round(idli["refill_quantity"] - 15.0, 1)
+    assert body["summary"]["refill_quantity"] == round(sum(r["refill_quantity"] for r in rows.values()), 1)
+    assert body["summary"]["products_to_restock"] == 3
+
+    # requesting the suggested batch counts as incoming stock and is no longer suggested
+    client.post(f"/vendors/{ACTIVE_VENDOR}/demands", json={"items": [{"batch_id": "B-IDLI"}]})
+    idli = {r["model_product"]: r for r in client.get(f"/vendors/{ACTIVE_VENDOR}/demand-forecast").json()["forecast"]}["Idly_Batter"]
+    assert idli["requested_kg"] == 15.0
+    assert idli["refill_quantity"] == round(idli["recommended_stock"] - 15.0, 1)
+    assert idli["suggested_batches"] == []

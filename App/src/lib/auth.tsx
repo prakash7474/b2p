@@ -1,19 +1,36 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 
 import {
   api,
+  setAuthToken,
   type CustomerLocation,
   type CustomerProfile,
   type NearbyVendor,
   type VendorProfile,
 } from "./api";
+import { LoadingScreen } from "@/src/components/layout";
+
+import { loadSavedSession, saveSession } from "./storage";
 
 export type Session = {
   userId: string;
   email: string;
   login: string;
   role: string;
+  /** Bearer token from /login or /customers/login. */
+  token: string;
 };
+
+/** What is kept on the device between launches. */
+type SavedSession = { session: Session; customer?: CustomerProfile | null };
 
 export type SignUpInput = {
   vendorId: string;
@@ -79,7 +96,10 @@ function normalizeVendor(vendor: VendorProfile): VendorProfile {
 }
 
 function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong. Please try again.";
+  if (error instanceof Error) return error.message;
+  // Some platform errors are plain objects that still carry a message.
+  const message = (error as { message?: unknown } | null)?.message;
+  return typeof message === "string" && message ? message : "Something went wrong. Please try again.";
 }
 
 /** Extracts a usable {latitude, longitude} from a customer profile, if any. */
@@ -92,11 +112,32 @@ function profileLocation(profile: CustomerProfile | null): CustomerLocation | nu
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const [ready, setReady] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [vendor, setVendor] = useState<VendorProfile | null>(null);
   const [customer, setCustomer] = useState<CustomerProfile | null>(null);
   const [nearbyVendors, setNearbyVendors] = useState<NearbyVendor[]>([]);
   const [customerLocation, setCustomerLocation] = useState<CustomerLocation | null>(null);
+
+  const signOut = useCallback(() => {
+    setAuthToken("");
+    void saveSession(null);
+    setSession(null);
+    setVendor(null);
+    setCustomer(null);
+    setNearbyVendors([]);
+    setCustomerLocation(null);
+  }, []);
+
+  /** Start sending the token and remember the session for the next launch. */
+  const keep = useCallback(
+    (next: Session, profile: CustomerProfile | null = null) => {
+      setAuthToken(next.token, signOut);
+      void saveSession(JSON.stringify({ session: next, customer: profile } satisfies SavedSession));
+      setSession(next);
+    },
+    [signOut],
+  );
 
   const loadProfile = useCallback(async (userId: string): Promise<VendorProfile | null> => {
     // GET /vendors/{id} resolves by vendor_id or Mongo _id; GET /users/{id}
@@ -113,21 +154,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error("This account is not a vendor account. Use a vendor login instead.");
       }
 
+      setAuthToken(data.token, signOut);
       const profile = await loadProfile(data.user_id);
 
       if (!profile) {
+        setAuthToken("");
         throw new Error("Signed in, but no vendor profile was found for this account.");
       }
 
-      setSession({
+      keep({
         userId: data.user_id,
         email: data.email ?? String(profile.email ?? login.trim()),
         login: login.trim(),
         role: data.role,
+        token: data.token,
       });
       setVendor(profile);
     },
-    [loadProfile],
+    [keep, loadProfile, signOut],
   );
 
   const signUp = useCallback(
@@ -167,17 +211,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error("Signed in, but no customer profile was found for this account.");
       }
 
-      setSession({
-        userId: String(profile._id ?? profile.customer_id ?? login.trim()),
-        email: String(profile.email ?? login.trim()),
-        login: login.trim(),
-        role: "customer",
-      });
+      keep(
+        {
+          userId: String(profile._id ?? profile.customer_id ?? login.trim()),
+          email: String(profile.email ?? login.trim()),
+          login: login.trim(),
+          role: "customer",
+          token: data.token,
+        },
+        profile,
+      );
       setCustomer(profile);
       setNearbyVendors(data.nearby_vendors ?? []);
       setCustomerLocation(location ?? profileLocation(profile));
     },
-    [],
+    [keep],
   );
 
   const signUpCustomer = useCallback(
@@ -229,13 +277,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const signOut = useCallback(() => {
-    setSession(null);
-    setVendor(null);
-    setCustomer(null);
-    setNearbyVendors([]);
-    setCustomerLocation(null);
-  }, []);
+  // Restore the saved session once on launch; an expired token signs out via the 401 handler.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const raw = await loadSavedSession();
+        const saved = raw ? (JSON.parse(raw) as SavedSession) : null;
+        if (saved?.session?.token) {
+          setAuthToken(saved.session.token, signOut);
+          if (saved.session.role === "customer") {
+            setCustomer(saved.customer ?? null);
+            setCustomerLocation(profileLocation(saved.customer ?? null));
+            setSession(saved.session);
+          } else {
+            const profile = await loadProfile(saved.session.userId);
+            if (profile) {
+              setVendor(profile);
+              setSession(saved.session);
+            }
+          }
+        }
+      } catch {
+        // Unreadable saved session: start signed out.
+      } finally {
+        setReady(true);
+      }
+    })();
+  }, [loadProfile, signOut]);
 
   const refreshVendor = useCallback(async () => {
     if (!session) return;
@@ -279,7 +347,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refreshVendor,
   ]);
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  // Route guards only run once the saved session has been checked, so a reload
+  // does not bounce a signed-in user to the login screen.
+  return (
+    <AuthContext.Provider value={value}>
+      {ready ? children : <LoadingScreen label="Loading..." />}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthContextValue {

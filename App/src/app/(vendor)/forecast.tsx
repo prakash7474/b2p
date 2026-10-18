@@ -7,7 +7,7 @@ import { Card, EmptyState, SectionTitle, StatCard, StatGrid } from "@/src/compon
 import { Button, SecondaryButton } from "@/src/components/controls";
 import { LoadingScreen, Screen } from "@/src/components/layout";
 import { AlertBox, BarMeter, StatusPill } from "@/src/components/status";
-import { api, type BatchChip, type ForecastItem } from "@/src/lib/api";
+import { api, parseServerDate, type BatchChip, type ForecastItem, type ForecastSummary } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
 import { colors, fonts } from "@/src/theme";
 
@@ -15,7 +15,10 @@ export default function ForecastScreen() {
   const { vendorId } = useAuth();
 
   const [forecast, setForecast] = useState<ForecastItem[] | null>(null);
+  const [summary, setSummary] = useState<ForecastSummary | null>(null);
+  const [windowLabel, setWindowLabel] = useState("");
   const [note, setNote] = useState("");
+  const [busyBatch, setBusyBatch] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -27,6 +30,8 @@ export default function ForecastScreen() {
       setError("");
       const result = await api.getForecast(vendorId);
       setForecast(result.forecast);
+      setSummary(result.summary ?? null);
+      setWindowLabel(result.window ? `this ${result.window.label}` : "this window");
       setNote(result.message ?? "");
     } catch (caught) {
       setError(messageOf(caught));
@@ -46,21 +51,26 @@ export default function ForecastScreen() {
     void load();
   };
 
+  // One-tap request for a batch the forecast suggests; the forecast then counts it as incoming.
+  const requestSuggested = async (batchId: string) => {
+    try {
+      setBusyBatch(batchId);
+      setError("");
+      const result = await api.requestBatch(vendorId, batchId);
+      setNote(result.message ?? `Requested ${batchId}.`);
+      await load();
+    } catch (caught) {
+      setError(messageOf(caught));
+    } finally {
+      setBusyBatch("");
+    }
+  };
+
   if (loading) {
     return <LoadingScreen label="Running demand forecast..." />;
   }
 
   const items = forecast ?? [];
-  const totals = items.reduce(
-    (acc, item) => {
-      acc.predicted += Number(item.predicted_demand ?? 0);
-      acc.recStock += Number(item.recommended_stock ?? 0);
-      acc.current += Number(item.current_stock ?? 0);
-      if (item.restock_needed) acc.restock += 1;
-      return acc;
-    },
-    { predicted: 0, recStock: 0, current: 0, restock: 0 },
-  );
 
   const chartMax = Math.max(
     1,
@@ -74,7 +84,7 @@ export default function ForecastScreen() {
   return (
     <Screen
       title="Demand Forecast"
-      subtitle="Predicted demand for the products you hold, and what to refill"
+      subtitle={`Expected sales ${windowLabel} for every product, and how much to restock`}
       icon="chart-timeline-variant"
       action={
         <SecondaryButton
@@ -101,28 +111,28 @@ export default function ForecastScreen() {
       <StatGrid>
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="trending-up" size={18} color={color} />}
-          label="Predicted Demand"
-          value={totals.predicted.toFixed(1)}
-          sub="units"
-        />
-        <StatCard
-          icon={(color) => <MaterialCommunityIcons name="shield-check-outline" size={18} color={color} />}
-          label="Rec. Stock to Hold"
-          value={totals.recStock.toFixed(1)}
-          sub="demand + safety"
+          label="Total Demand"
+          value={Number(summary?.predicted_demand ?? 0).toFixed(1)}
+          sub={`kg, all products, ${windowLabel}`}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="package-variant-closed" size={18} color={color} />}
-          label="Current Stock"
-          value={totals.current.toFixed(1)}
-          sub="kg in batches"
+          label="Sellable Stock"
+          value={Number(summary?.current_stock ?? 0).toFixed(1)}
+          sub="kg, unexpired"
+        />
+        <StatCard
+          icon={(color) => <MaterialCommunityIcons name="truck-delivery-outline" size={18} color={color} />}
+          label="Requested"
+          value={Number(summary?.requested_kg ?? 0).toFixed(1)}
+          sub="kg awaiting the admin"
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="alert-circle-outline" size={18} color={color} />}
-          label="Restock Needed"
-          value={totals.restock}
-          sub="products"
-          tone={totals.restock > 0 ? "danger" : "success"}
+          label="To Restock"
+          value={Number(summary?.refill_quantity ?? 0).toFixed(1)}
+          sub={`kg across ${summary?.products_to_restock ?? 0} product(s)`}
+          tone={(summary?.refill_quantity ?? 0) > 0 ? "danger" : "success"}
         />
       </StatGrid>
 
@@ -130,8 +140,8 @@ export default function ForecastScreen() {
         <Card>
           <EmptyState
             icon={<MaterialCommunityIcons name="chart-timeline-variant" size={26} color={colors.muted} />}
-            title="No batches yet"
-            text="Forecasts appear for the products you hold. Request a batch to get started."
+            title="No forecast"
+            text="The demand model is not available right now. Try Refresh."
           />
         </Card>
       ) : (
@@ -200,16 +210,18 @@ export default function ForecastScreen() {
           <View>
             <SectionTitle
               title="Demand & Refill"
-              subtitle="Refill only when stock is below demand: deficit + safety stock"
+              subtitle="Restock = demand + safety stock − sellable stock − already requested"
             />
             <Card>
               {items.map((item, index) => {
                 const demand = Number(item.predicted_demand ?? 0);
                 const safety = Number(item.safety_stock ?? 0);
                 const current = Number(item.current_stock ?? 0);
-                const deficit = Number(item.deficit ?? 0);
+                const requested = Number(item.requested_kg ?? 0);
                 const refill = Number(item.refill_quantity ?? 0);
                 const restock = Boolean(item.restock_needed);
+                const suggested = item.suggested_batches ?? [];
+                const uncovered = Number(item.uncovered_kg ?? 0);
 
                 return (
                   <View
@@ -223,10 +235,7 @@ export default function ForecastScreen() {
                       <Text style={styles.detailProduct}>
                         {String(item.product_name ?? "Product")}
                       </Text>
-                      <StatusPill
-                        status={restock ? "high" : "active"}
-                        label={restock ? "Restock Needed" : "No Restock Needed"}
-                      />
+                      <StatusPill status={restock ? "high" : "active"} label={String(item.status ?? "")} />
                     </View>
 
                     <View style={styles.metrics}>
@@ -244,13 +253,40 @@ export default function ForecastScreen() {
                       />
                       <Text style={[styles.mismatchText, { color: restock ? colors.danger : colors.success }]}>
                         {restock
-                          ? `Deficit ${deficit} kg (demand ${demand} > stock ${current}). Refill ${refill} kg = deficit + ${safety} kg safety stock.`
-                          : `Stock ${current} kg covers demand ${demand} kg. No refill needed.`}
+                          ? `Restock ${refill} kg = demand ${demand} + safety ${safety} − stock ${current}${requested ? ` − requested ${requested}` : ""}.`
+                          : `Stock ${current} kg${requested ? ` + requested ${requested} kg` : ""} covers demand ${demand} kg plus ${safety} kg safety stock.`}
                       </Text>
                     </View>
 
-                    {item.has_sales_history === false ? (
-                      <Text style={styles.coldStart}>No sales history yet: cold-start estimate.</Text>
+                    {item.history_source === "baseline" ? (
+                      <Text style={styles.coldStart}>
+                        No sales here yet: baseline for a shop like yours (location, weather, festivals). It adapts after a week of sales.
+                      </Text>
+                    ) : null}
+
+                    {suggested.length > 0 ? (
+                      <View style={styles.suggestions}>
+                        <Text style={styles.suggestTitle}>Batches that cover this restock</Text>
+                        {suggested.map((batch) => (
+                          <View key={String(batch.batch_id)} style={styles.suggestRow}>
+                            <Text style={styles.suggestText}>
+                              {String(batch.batch_id)} · {Number(batch.remaining_kg ?? 0)} kg
+                              {batch.hours_to_expiry !== undefined ? ` · ${Math.round(Number(batch.hours_to_expiry))} h shelf life left` : ""}
+                            </Text>
+                            <SecondaryButton
+                              label="Request"
+                              compact
+                              loading={busyBatch === batch.batch_id}
+                              onPress={() => void requestSuggested(String(batch.batch_id))}
+                            />
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
+                    {restock && uncovered > 0 ? (
+                      <Text style={styles.coldStart}>
+                        {uncovered} kg has no available batch yet: the manufacturer needs to make more.
+                      </Text>
                     ) : null}
 
                     <View style={styles.chips}>
@@ -270,13 +306,14 @@ export default function ForecastScreen() {
 }
 
 function BatchChipView({ batch }: { batch: BatchChip }) {
-  const when = batch.received_at ? new Date(String(batch.received_at)) : null;
+  const when = batch.received_at ? parseServerDate(batch.received_at) : null;
   return (
     <View style={styles.chip}>
       <Text style={styles.chipId}>{String(batch.batch_id ?? "batch")}</Text>
       <Text style={styles.chipMeta}>
         {Number(batch.remaining_kg ?? 0)} kg
         {when && !Number.isNaN(when.getTime()) ? ` · ${when.toLocaleDateString()}` : ""}
+        {batch.expired ? " · expired" : ""}
       </Text>
     </View>
   );
@@ -417,6 +454,30 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: colors.muted,
     fontFamily: fonts.regular,
+  },
+  suggestions: {
+    gap: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingTop: 8,
+  },
+  suggestTitle: {
+    fontSize: 10,
+    fontWeight: "700",
+    fontFamily: fonts.bold,
+    color: colors.text,
+  },
+  suggestRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  suggestText: {
+    fontSize: 10,
+    color: colors.muted,
+    fontFamily: fonts.regular,
+    flex: 1,
   },
   chips: {
     flexDirection: "row",

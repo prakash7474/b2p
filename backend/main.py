@@ -11,15 +11,19 @@ Run with:  python backend/main.py   (uvicorn on 0.0.0.0:5000)
 """
 
 import os
+import base64
+import hashlib
+import hmac
+import json
 import math
 import re
+import time
 import datetime
 import statistics
 import warnings
 from pathlib import Path as FilePath
 from typing import Optional
-from fastapi import FastAPI, Body, HTTPException, status
-from fastapi import FastAPI, HTTPException, Path, Body
+from fastapi import FastAPI, Body, Depends, Header, HTTPException, Path, status
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pymongo import MongoClient, ReturnDocument
@@ -222,34 +226,94 @@ def check_password(password, password_hash):
     )
     
 
-def login_user(login, password):
-    """Legacy helper (not wired to a route): returns a result dict, not raises."""
+# ------------------------------------------------------------
+# Auth: /login and /customers/login hand out an HMAC-signed token
+# (user id, role, vendor id, 7-day expiry). Routes read it with
+# Depends(current_user) and check it with require_role / require_vendor.
+# ------------------------------------------------------------
+# shortcut: without AUTH_SECRET the key is derived from MONGODB_URI; set AUTH_SECRET in .env before deploying.
+AUTH_SECRET = (os.getenv("AUTH_SECRET") or hashlib.sha256(MONGODB_URI.encode()).hexdigest()).encode()
+TOKEN_TTL_SECONDS = 7 * 24 * 3600
 
-    user = COLS["users"].find_one({
-        "$or": [
-            {"email": login},
-            {"phone": login}
-        ]
-    })
 
-    if not user:
-        return {"error": "Invalid login"}
+def _sign(payload):
+    return hmac.new(AUTH_SECRET, payload.encode(), hashlib.sha256).hexdigest()
 
-    if not check_password(
-        password,
-        user["password_hash"]
-    ):
-        return {"error": "Invalid login"}
 
-    if not user.get("is_verified", False):
-        return {"error": "User is not verified"}
+def issue_token(user_id, role, vendor_id=None):
+    """Signed bearer token for a signed-in user."""
+    payload = base64.urlsafe_b64encode(json.dumps({
+        "sub": str(user_id), "role": role, "vendor_id": vendor_id,
+        "exp": int(time.time()) + TOKEN_TTL_SECONDS,
+    }).encode()).decode()
+    return f"{payload}.{_sign(payload)}"
 
-    return {
-        "message": "Login successful",
-        "user_id": user["user_id"],
-        "role": user["role"],
-        "email": user["email"]
-    }
+
+def _decode_token(authorization):
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    payload, _, signature = token.partition(".")
+    if not payload or not hmac.compare_digest(signature.encode(), _sign(payload).encode()):
+        raise HTTPException(status_code=401, detail="Please sign in")
+    claims = json.loads(base64.urlsafe_b64decode(payload))
+    if claims.get("exp", 0) < time.time():
+        raise HTTPException(status_code=401, detail="Session expired, please sign in again")
+    return claims
+
+
+def current_user(authorization: str = Header(default="")):
+    """The signed-in caller ({sub, role, vendor_id}); 401 without a valid token."""
+    return _decode_token(authorization)
+
+
+def optional_user(authorization: str = Header(default="")):
+    """Like current_user, but None for anonymous callers (public sign-up)."""
+    return _decode_token(authorization) if authorization else None
+
+
+def require_role(user, *roles):
+    """Admins may do anything; everyone else needs one of ``roles``."""
+    if user["role"] != "admin" and user["role"] not in roles:
+        raise HTTPException(status_code=403, detail="You do not have access to this")
+
+
+def require_vendor(user, vendor_id):
+    """Admins, or the vendor the path names (by vendor_id or Mongo _id)."""
+    if user["role"] == "admin":
+        return
+    if user["role"] == "vendor" and user.get("vendor_id"):
+        if vendor_id == user["vendor_id"]:
+            return
+        vendor = _find_vendor(vendor_id)
+        if vendor and user["vendor_id"] in _vendor_id_values(vendor):
+            return
+    raise HTTPException(status_code=403, detail="You can only access your own shop")
+
+
+def _find_login_user(login_id):
+    """User by phone or email; emails match case-insensitively (older rows kept their casing)."""
+    return COLS["users"].find_one({"$or": [
+        {"email": {"$regex": f"^{re.escape(login_id)}$", "$options": "i"}},
+        {"phone": login_id},
+    ]})
+
+
+def _vendor_for_user(user):
+    """Vendor document linked to a vendor login (vendors.user_id, vendor_id or _id)."""
+    uid = str(user.get("user_id") or "")
+    if not uid:
+        return None
+    query = [{"user_id": uid}, {"vendor_id": uid}]
+    if ObjectId.is_valid(uid):
+        query.append({"_id": ObjectId(uid)})
+    return COLS["vendors"].find_one({"$or": query})
+
+
+APPROVED_STATUSES = ["active", "approved", "verified"]
+
+
+def _vendor_status(vendor):
+    # Seed vendors keep their state in verificationStatus, app-created ones in status.
+    return str(_field(vendor, "status", "verificationStatus", default="pending")).lower()
 
 
 def _valid_coordinates(latitude, longitude):
@@ -302,7 +366,7 @@ def _vendor_id_values(vendor):
 
 
 def find_nearby_vendors(latitude, longitude, radius_meters=5000, product_id=None):
-    """Return active vendors within a radius that have mapped, positive stock."""
+    """Return active vendors within a radius that have stock a customer can buy now."""
     coords = _valid_coordinates(latitude, longitude)
     if not coords:
         raise HTTPException(status_code=400, detail="Valid latitude and longitude are required")
@@ -321,8 +385,8 @@ def find_nearby_vendors(latitude, longitude, radius_meters=5000, product_id=None
             "maxDistance": radius_meters,
             "spherical": True,
             "query": {"$or": [
-                {"status": {"$in": ["active", "approved", "verified"]}},
-                {"verificationStatus": {"$in": ["active", "approved", "verified"]}}
+                {"status": {"$in": APPROVED_STATUSES}},
+                {"verificationStatus": {"$in": APPROVED_STATUSES}}
             ]}
         }}
     ]
@@ -331,17 +395,20 @@ def find_nearby_vendors(latitude, longitude, radius_meters=5000, product_id=None
         vendor_ids = _vendor_id_values(vendor)
         if not vendor_ids:
             continue
-        inventory_query = {
-            "vendor_id": {"$in": vendor_ids},
-            "quantity": {"$gt": 0}
-        }
+        # Same stock /orders can sell: received batches with kg left that have not expired.
+        batch_query = {"vendor_id": {"$in": vendor_ids}, "status": {"$in": SELLABLE_STATUSES}}
         if product_id:
-            inventory_query["product_id"] = product_id
-        stock_items = list(COLS["inventory"].find(inventory_query))
-        if not stock_items:
+            batch_query["product_id"] = product_id
+        stock = {}
+        for batch in COLS["batches"].find(batch_query):
+            kg = _batch_remaining(batch)
+            if kg > 0 and _hours_to_expiry(vendor, batch) > 0:
+                item = stock.setdefault(batch.get("product_id"), {
+                    "product_id": batch.get("product_id"), "product_name": batch.get("product_name"), "quantity": 0.0})
+                item["quantity"] = round(item["quantity"] + kg, 3)
+        if not stock:
             continue
-        for item in stock_items:
-            item["_id"] = str(item["_id"])
+        stock_items = list(stock.values())
         vendor["_id"] = str(vendor["_id"])
         vendor["distance_km"] = round(float(vendor.pop("distance_meters", 0)) / 1000, 2)
         vendor["available_inventory"] = stock_items
@@ -425,17 +492,26 @@ def login(data: dict = Body(...)):
 
     if not login_id or not password:
         raise HTTPException(status_code=400, detail="Login and password are required")
-    user = COLS["users"].find_one({"$or": [{"email": login_id}, {"phone": login_id}]})
+    user = _find_login_user(login_id)
     if not user or not user.get("password_hash") or not check_password(password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid login")
     if not user.get("is_verified", False):
         raise HTTPException(status_code=403, detail="User is not verified")
 
+    vendor_id = None
+    if user.get("role") == "vendor":
+        vendor = _vendor_for_user(user)
+        if vendor and _vendor_status(vendor) in ("rejected", "suspended"):
+            raise HTTPException(status_code=403, detail=f"This shop account was {_vendor_status(vendor)} by the admin")
+        vendor_id = (vendor or {}).get("vendor_id") or (str(vendor["_id"]) if vendor else None)
+
     response = {
         "message": "Login successful",
         "user_id": user.get("user_id"),
         "role": user.get("role"),
-        "email": user.get("email")
+        "email": user.get("email"),
+        "vendor_id": vendor_id,
+        "token": issue_token(user.get("user_id"), user.get("role"), vendor_id),
     }
     location = _location_payload(data)
     if user.get("role") == "customer" and location:
@@ -449,7 +525,8 @@ def login(data: dict = Body(...)):
 # GET /users — list all users (password hashes stripped); falls back to the
 # vendors collection when the users collection is empty.
 @app.get("/users")
-def get_users():
+def get_users(user: dict = Depends(current_user)):
+    require_role(user)
     users = list(COLS["users"].find({}, {"password_hash": 0}))
     if not users:
         users = list(COLS["vendors"].find())
@@ -463,10 +540,15 @@ def get_users():
     }
 
 
-# GET /logs — full activity log, newest records included as stored.
+# GET /logs — full activity log for admins; a vendor sees only its own entries.
 @app.get("/logs")
-def get_logs():
-    logs = list(COLS["logs"].find())
+def get_logs(user: dict = Depends(current_user)):
+    require_role(user, "vendor")
+    query = {}
+    if user["role"] == "vendor":
+        vendor = _find_vendor(user["vendor_id"]) or {}
+        query = {"vendor_id": {"$in": _vendor_id_values(vendor) or [user["vendor_id"]]}}
+    logs = list(COLS["logs"].find(query))
 
     for log in logs:
         log["_id"] = str(log["_id"])
@@ -485,7 +567,8 @@ def get_vendors(
     latitude: Optional[float] = None,
     longitude: Optional[float] = None,
     radius_meters: float = 5000,
-    product_id: Optional[str] = None
+    product_id: Optional[str] = None,
+    user: dict = Depends(current_user)
 ):
     # Existing GET /vendors still returns the full list when coordinates are omitted.
     # Supplying latitude and longitude turns it into a nearby-stock search.
@@ -494,6 +577,7 @@ def get_vendors(
             raise HTTPException(status_code=400, detail="Send both latitude and longitude")
         vendors = find_nearby_vendors(latitude, longitude, radius_meters, product_id)
         return {"count": len(vendors), "vendors": vendors}
+    require_role(user)
     vendors = list(COLS["vendors"].find())
     for vendor in vendors:
         vendor["_id"] = str(vendor["_id"])
@@ -501,18 +585,20 @@ def get_vendors(
 
 
 # POST /vendors — register a vendor; with email+password also creates the
-# linked vendor user account and an activity log entry.
+# linked vendor user account and an activity log entry. Public sign-ups
+# always start "pending" until an admin approves them.
 @app.post("/vendors")
-def create_vendor(data: dict = Body(...)):
+def create_vendor(data: dict = Body(...), user: Optional[dict] = Depends(optional_user)):
+    is_admin = bool(user) and user["role"] == "admin"
     vendor_id = data.get("vendor_id")
-    email = data.get("email")
+    email = (data.get("email") or "").strip().lower()
     password = data.get("password")
     phone = data.get("phone", "")
 
     if vendor_id and COLS["vendors"].find_one({"vendor_id": vendor_id}):
         return {"error": "Vendor with this vendor_id already exists"}
 
-    if email and COLS["users"].find_one({"email": email}):
+    if email and _find_login_user(email):
         return {"error": "User with this email already exists"}
 
     location = data.get("location", {})
@@ -528,7 +614,7 @@ def create_vendor(data: dict = Body(...)):
         "shop_name": data.get("shop_name", ""),
         "owner_name": data.get("owner_name", ""),
         "locality_tier": data.get("locality_tier", "mixed"),
-        "status": data.get("status", "pending"),
+        "status": data.get("status", "pending") if is_admin else "pending",
         "location": vendor_location,
         "email": email or "",
         "phone": phone
@@ -550,7 +636,8 @@ def create_vendor(data: dict = Body(...)):
             "phone": phone,
             "password_hash": hash_password(password),
             "role": "vendor",
-            "is_verified": data.get("is_verified", True)  # Set default verification
+            # Vendors can sign in while pending; the pending status gates batch requests.
+            "is_verified": data.get("is_verified", True) if is_admin else True
         }
         user_result = COLS["users"].insert_one(user_doc)
         user_result_id = str(user_result.inserted_id)
@@ -571,7 +658,7 @@ def create_vendor(data: dict = Body(...)):
 
 # GET /vendors/{vendor_id} — single vendor by vendor_id or Mongo _id.
 @app.get("/vendors/{vendor_id}")
-def get_vendor(vendor_id: str = Path(...)):
+def get_vendor(vendor_id: str = Path(...), user: dict = Depends(current_user)):
     query = {
         "vendor_id": vendor_id
     }
@@ -604,7 +691,8 @@ def get_vendor(vendor_id: str = Path(...)):
 # GET /vendors/{vendor_id}/products — catalog entries for products this
 # vendor has in inventory (empty inventory = full catalog).
 @app.get("/vendors/{vendor_id}/products")
-def get_vendor_products(vendor_id: str = Path(...)):
+def get_vendor_products(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    require_vendor(user, vendor_id)
     vid = vendor_id
 
     if ObjectId.is_valid(vendor_id):
@@ -671,7 +759,8 @@ def get_vendor_products(vendor_id: str = Path(...)):
 
 # GET /vendors/{vendor_id}/inventory — stock rows for one vendor.
 @app.get("/vendors/{vendor_id}/inventory")
-def get_vendor_inventory(vendor_id: str = Path(...)):
+def get_vendor_inventory(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    require_vendor(user, vendor_id)
     vid = vendor_id
 
     if ObjectId.is_valid(vendor_id):
@@ -706,13 +795,14 @@ def get_vendor_inventory(vendor_id: str = Path(...)):
 
 # GET /inventory/{vendor_id} — alias of /vendors/{vendor_id}/inventory.
 @app.get("/inventory/{vendor_id}")
-def get_inventory(vendor_id: str = Path(...)):
-    return get_vendor_inventory(vendor_id)
+def get_inventory(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    return get_vendor_inventory(vendor_id, user)
 
 
 # GET /vendors/{vendor_id}/orders — customer orders placed at this vendor.
 @app.get("/vendors/{vendor_id}/orders")
-def get_vendor_orders(vendor_id: str = Path(...)):
+def get_vendor_orders(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    require_vendor(user, vendor_id)
     orders = list(
         COLS["orders"].find({
             "$or": [
@@ -732,7 +822,8 @@ def get_vendor_orders(vendor_id: str = Path(...)):
 
 # GET /vendors/{vendor_id}/restock-requests — restock requests for one vendor.
 @app.get("/vendors/{vendor_id}/restock-requests")
-def get_vendor_restock_requests(vendor_id: str = Path(...)):
+def get_vendor_restock_requests(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    require_vendor(user, vendor_id)
     requests = list(
         COLS["restock_requests"].find({
             "$or": [
@@ -752,7 +843,8 @@ def get_vendor_restock_requests(vendor_id: str = Path(...)):
 
 # GET /vendors/{vendor_id}/demands — demand view backed by restock_requests.
 @app.get("/vendors/{vendor_id}/demands")
-def get_vendor_demands(vendor_id: str = Path(...)):
+def get_vendor_demands(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    require_vendor(user, vendor_id)
     demands = list(
         COLS["restock_requests"].find({
             "$or": [
@@ -769,21 +861,39 @@ def get_vendor_demands(vendor_id: str = Path(...)):
     }
 
 
-# POST /products — add a catalog product (product_id must be unique).
+# POST /products — add a catalog product. Only the products the demand model
+# knows (Idli, Dosa, Combo) are allowed, once each under any spelling.
 @app.post("/products")
-def create_product(data: dict = Body(...)):
+def create_product(data: dict = Body(...), user: dict = Depends(current_user)):
+    require_role(user)
     product_id = data.get("product_id")
     product_name = data.get("product_name")
     if not product_id or not product_name:
         return {"error": "product_id and product_name are required"}
     if COLS["products"].find_one({"product_id": product_id}):
         return {"error": f"Product with product_id {product_id} already exists"}
+    if not demand_bundle or not _model_label(product_name):
+        return {"error": "Only Idli Batter, Dosa Batter and Combo Pack can be sold (the products the forecast model knows)"}
+    duplicate = next((p for p in COLS["products"].find()
+                      if _product_key(p.get("product_name")) == _product_key(product_name)), None)
+    if duplicate:
+        return {"error": f"{product_name} already exists as {duplicate.get('product_id')}"}
+    try:
+        # Expiry reads these two (fridge vs room temperature); same fields as the seeded catalog.
+        fridge_hrs = float(data.get("shelf_life_fridge_hrs", data.get("shelf_life_hours", 72)))
+        ambient_hrs = float(data.get("shelf_life_ambient_hrs", 24))
+    except (TypeError, ValueError):
+        return {"error": "shelf life hours must be numbers"}
+    if fridge_hrs <= 0 or ambient_hrs <= 0:
+        return {"error": "shelf life hours must be greater than 0"}
     product_doc = {
         "product_id": product_id,
         "product_name": product_name,
         "category": data.get("category", ""),
         "unit": data.get("unit", "kg"),
         "shelf_life_hours": data.get("shelf_life_hours", 72),
+        "shelf_life_fridge_hrs": fridge_hrs,
+        "shelf_life_ambient_hrs": ambient_hrs,
         "description": data.get("description", ""),
         "created_at": datetime.datetime.utcnow().isoformat()
     }
@@ -800,7 +910,7 @@ def create_product(data: dict = Body(...)):
 
 # GET /products — full product catalog.
 @app.get("/products")
-def list_products():
+def list_products(user: dict = Depends(current_user)):
     products = list(COLS["products"].find())
     for product in products:
         product["_id"] = str(product["_id"])
@@ -809,7 +919,7 @@ def list_products():
 
 # GET /products/{product_id} — one product by product_id (or Mongo _id).
 @app.get("/products/{product_id}")
-def get_product(product_id: str = Path(...)):
+def get_product(product_id: str = Path(...), user: dict = Depends(current_user)):
     product = COLS["products"].find_one({"product_id": product_id})
     if product is None and ObjectId.is_valid(product_id):
         product = COLS["products"].find_one({"_id": ObjectId(product_id)})
@@ -822,7 +932,8 @@ def get_product(product_id: str = Path(...)):
 # POST /batches — create a batch. Without vendor_id it is "available" for
 # vendors to request; with vendor_id it is assigned straight to that vendor.
 @app.post("/batches")
-def create_batch(data: dict = Body(...)):
+def create_batch(data: dict = Body(...), user: dict = Depends(current_user)):
+    require_role(user)
     # Without vendor_id the batch is "available": exposed for vendors to request.
     vendor_id = data.get("vendor_id")
     product_id = data.get("product_id")
@@ -886,7 +997,12 @@ def create_batch(data: dict = Body(...)):
 # GET /batches — list batches; filter by vendor_id / product_id / status,
 # and exposed=false for the admin's hidden batch list.
 @app.get("/batches")
-def list_batches(vendor_id: str = None, product_id: str = None, status: str = None, exposed: Optional[bool] = None):
+def list_batches(vendor_id: str = None, product_id: str = None, status: str = None, exposed: Optional[bool] = None,
+                 user: dict = Depends(current_user)):
+    require_role(user, "vendor")
+    if user["role"] != "admin":
+        # Vendors only browse what the admin exposed for requesting.
+        vendor_id, status, exposed = None, "available", True
     query = {}
     if vendor_id:
         query["vendor_id"] = vendor_id
@@ -906,8 +1022,9 @@ def list_batches(vendor_id: str = None, product_id: str = None, status: str = No
 
 
 @app.post("/batches/{batch_id}/visibility")
-def set_batch_visibility(batch_id: str = Path(...), data: dict = Body(...)):
+def set_batch_visibility(batch_id: str = Path(...), data: dict = Body(...), user: dict = Depends(current_user)):
     """Admin hides/exposes an unassigned batch from the vendors' request list."""
+    require_role(user)
     result = COLS["batches"].update_one(
         {"batch_id": batch_id, "status": "available"},
         {"$set": {"exposed": bool(data.get("exposed")), "updated_at": datetime.datetime.utcnow()}}
@@ -919,7 +1036,8 @@ def set_batch_visibility(batch_id: str = Path(...), data: dict = Body(...)):
 
 # GET /batches/{batch_id} — one batch by batch_id (or Mongo _id).
 @app.get("/batches/{batch_id}")
-def get_batch(batch_id: str = Path(...)):
+def get_batch(batch_id: str = Path(...), user: dict = Depends(current_user)):
+    require_role(user, "vendor")
     batch = COLS["batches"].find_one({"batch_id": batch_id})
     if batch is None and ObjectId.is_valid(batch_id):
         batch = COLS["batches"].find_one({"_id": ObjectId(batch_id)})
@@ -931,7 +1049,8 @@ def get_batch(batch_id: str = Path(...)):
 
 # POST /inventory — map (or overwrite) a product's stock quantity at a vendor.
 @app.post("/inventory")
-def create_inventory(data: dict = Body(...)):
+def create_inventory(data: dict = Body(...), user: dict = Depends(current_user)):
+    require_role(user)
     vendor_id = data.get("vendor_id")
     product_id = data.get("product_id")
     if not vendor_id or not product_id:
@@ -993,7 +1112,8 @@ def create_inventory(data: dict = Body(...)):
 
 # GET /inventory — list inventory rows (optional vendor_id / product_id filter).
 @app.get("/inventory")
-def list_inventory(vendor_id: str = None, product_id: str = None):
+def list_inventory(vendor_id: str = None, product_id: str = None, user: dict = Depends(current_user)):
+    require_role(user)
     query = {}
     if vendor_id:
         query["vendor_id"] = vendor_id
@@ -1030,9 +1150,12 @@ def _refresh_weather():
         # Training data stores rain probability as 0-1; Open-Meteo sends 0-100.
         "rainProbability": float(hourly["precipitation_probability"][i] or 0) / 100,
         "source": "open-meteo",
-        "fetchedAt": datetime.datetime.utcnow(),
+        "locationGridKey": os.getenv("WEATHER_GRID_KEY", "chennai_central"),
+        "forecastIssuedAt": datetime.datetime.utcnow(),
     }
-    COLS["weather_forecast"].update_one({"forecastFor": hour, "source": "open-meteo"}, {"$set": doc}, upsert=True)
+    COLS["weather_forecast"].update_one(
+        {"forecastFor": hour, "source": "open-meteo", "locationGridKey": doc["locationGridKey"]},
+        {"$set": doc}, upsert=True)
     return doc
 
 
@@ -1044,7 +1167,9 @@ def _latest_weather():
     global _weather_tried_at
     now = datetime.datetime.utcnow()
     latest = COLS["weather_forecast"].find_one({"forecastFor": {"$lte": now}}, sort=[("forecastFor", -1)])
-    if latest and now - latest["forecastFor"] < WEATHER_MAX_AGE:
+    # Admin "manual_override" rows are daily (forecastFor = midnight) and win for that day.
+    max_age = datetime.timedelta(days=1) if (latest or {}).get("source") == "manual_override" else WEATHER_MAX_AGE
+    if latest and now - latest["forecastFor"] < max_age:
         return latest
     if _weather_tried_at is None or now - _weather_tried_at > WEATHER_MAX_AGE:
         _weather_tried_at = now
@@ -1077,13 +1202,21 @@ def _encode(encoder, value, default=0):
 
 # The model only knows two sales windows: training rows are hour 8 or hour 18.
 SLOT_HOURS = (8, 18)
-SLOT_NAMES = ("morning", "evening")
 
 
 def _slot_of(moment):
     """(local date, 0 = morning / 1 = evening) for a naive UTC timestamp."""
     local = moment.replace(tzinfo=datetime.timezone.utc).astimezone()
     return local.date(), 0 if local.hour < 13 else 1
+
+
+def _slot_bounds(slot):
+    """(start, end) of a slot as naive UTC: morning is local 00:00-13:00, evening 13:00-24:00."""
+    day, window = slot
+    local = lambda hour: datetime.datetime.combine(day, datetime.time()) + datetime.timedelta(hours=hour)
+    to_utc = lambda moment: moment.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    start, end = (0, 13) if window == 0 else (13, 24)
+    return to_utc(local(start)), to_utc(local(end))
 
 
 def _demand_shared_context():
@@ -1171,25 +1304,87 @@ def _sales_series(vendor, current_slot):
     return series
 
 
-def _batch_chip(batch):
+def _load_baseline_history():
+    """Typical history inputs per (product, window, locality) from the training data.
+
+    A shop with no sales yet is forecast from these instead of all-zero history,
+    which the model never saw in training (it then predicts ~11 kg for every product).
+    """
+    path = BASE_DIR / "model_code_and_data" / "b2p_demand_forecasting_data.csv"
+    if not path.exists():
+        return {}
+    df = pd.read_csv(path)
+    baseline = {}
+    for keys in (["productId", "window_order"], ["productId", "window_order", "localityTier"]):
+        for key, row in df.groupby(keys)[HISTORY_FEATURES].median().iterrows():
+            baseline[key] = {name: float(row[name]) for name in HISTORY_FEATURES}
+    return baseline
+
+
+BASELINE_HISTORY = _load_baseline_history()
+
+
+def _batch_chip(batch, vendor=None):
     """Small batch summary embedded in a forecast row."""
-    return {
+    chip = {
         "batch_id": batch.get("batch_id"),
         "remaining_kg": round(_batch_remaining(batch), 2),
         "status": batch.get("status"),
         "received_at": _field(batch, "received_at", "assigned_at", "created_at"),
     }
+    if vendor is not None:
+        chip["expired"] = _hours_to_expiry(vendor, batch) <= 0
+    return chip
+
+
+def _suggest_batches(batches, needed_kg):
+    """Freshest available batches that together cover ``needed_kg`` (greedy)."""
+    picked, covered = [], 0.0
+    for hours_left, batch in sorted(batches, key=lambda pair: -pair[0]):
+        if covered >= needed_kg:
+            break
+        picked.append({**_batch_chip(batch), "hours_to_expiry": round(hours_left, 1)})
+        covered += _batch_remaining(batch)
+    return picked, round(covered, 1)
 
 
 def _vendor_forecast(vendor, ctx):
-    """Forecast only the products the vendor actually holds batches of."""
-    by_label, unsupported = {}, set()
+    """Forecast every catalog product for this shop's current sales window.
+
+    stock      = unexpired kg in batches the shop holds (assigned or received)
+    requested  = kg in the shop's pending batch requests
+    refill     = demand + safety stock - stock - requested (never below 0)
+    """
+    held, unsupported = {}, set()
     for batch in _held_batches(vendor):
         label = _model_label(_field(batch, "product_name", "product_id"))
         if label:
-            by_label.setdefault(label, []).append(batch)
+            held.setdefault(label, []).append(batch)
         else:
             unsupported.add(_field(batch, "product_name", "product_id"))
+
+    # Every sellable product gets a forecast, held or not (a new shop still has demand).
+    names = {}
+    for product in COLS["products"].find():
+        label = _model_label(product.get("product_name"))
+        if label and label not in names:
+            names[label] = product.get("product_name")
+
+    requested = {}
+    pending = list(COLS["restock_requests"].find({"vendor_id": {"$in": _vendor_id_values(vendor)}, "status": "pending"}))
+    pending_batch_ids = {item.get("batch_id") for r in pending for item in r.get("items", []) if item.get("batch_id")}
+    for r in pending:
+        for item in r.get("items", []):
+            label = _model_label(_field(item, "product_name", "product_id"))
+            if label and item.get("batch_id"):
+                requested[label] = requested.get(label, 0.0) + float(item.get("quantity") or 0)
+
+    available = {}
+    for batch in COLS["batches"].find({"status": "available", "exposed": {"$ne": False}}):
+        label = _model_label(_field(batch, "product_name", "product_id"))
+        hours_left = _hours_to_expiry(vendor, batch)
+        if label and hours_left > 0 and _batch_remaining(batch) > 0 and batch.get("batch_id") not in pending_batch_ids:
+            available.setdefault(label, []).append((hours_left, batch))
 
     # Latest DEMAND feature snapshot per product. The ML pipeline writes these in
     # camelCase with the inputs nested under featureVector.
@@ -1203,8 +1398,9 @@ def _vendor_forecast(vendor, ctx):
             history[label] = snap.get("featureVector") or {}
 
     locality = _field(vendor, "localityTier", "locality_tier", default="mixed")
+    locality = LOCALITY_ALIASES.get(locality, locality)
     vendor_features = {
-        "localityTierEnc": _encode(demand_bundle["locality_encoder"], LOCALITY_ALIASES.get(locality, locality),
+        "localityTierEnc": _encode(demand_bundle["locality_encoder"], locality,
                                    _encode(demand_bundle["locality_encoder"], "mixed")),
         # shortcut: mid-range of training data (3-33) when a vendor has no score
         "hotspotDensityScore": float(_field(vendor, "hotspotDensityScore", "hotspot_density_score", default=18)),
@@ -1212,17 +1408,21 @@ def _vendor_forecast(vendor, ctx):
 
     slot = _slot_of(datetime.datetime.utcnow())
     sales = _sales_series(vendor, slot)
+    window_start, window_end = _slot_bounds(slot)
 
     forecasts = []
-    for label, batches in sorted(by_label.items()):
-        snapshot = history.get(label)
-        series = sales.get(label)
-        # A full week of real sales beats the seeded snapshot; a few days beat nothing.
-        if series and (len(series) >= 14 or snapshot is None):
-            past = _history_features(series)
+    for label in sorted(set(names) | set(held)):
+        batches = held.get(label, [])
+        series, snapshot = sales.get(label), history.get(label)
+        # shortcut: under a week of real sales, the snapshot or the baseline wins; blend them once shops have data.
+        if series and len(series) >= 14:
+            source, past = "sales", _history_features(series)
+        elif snapshot is not None:
+            source, past = "snapshot", {name: float(snapshot.get(name, 0.0)) for name in HISTORY_FEATURES}
         else:
-            # No snapshot either = cold start with zero history.
-            past = {name: float((snapshot or {}).get(name, 0.0)) for name in HISTORY_FEATURES}
+            source = "baseline"
+            past = BASELINE_HISTORY.get((label, slot[1], locality)) or BASELINE_HISTORY.get((label, slot[1])) \
+                or {name: 0.0 for name in HISTORY_FEATURES}
         row = {
             **ctx,
             **vendor_features,
@@ -1231,34 +1431,49 @@ def _vendor_forecast(vendor, ctx):
         }
         df_input = pd.DataFrame([row])[demand_bundle["features"]]
         demand = round(float(np.clip(demand_bundle["model"].predict(df_input)[0], 0, None)), 1)
-        # One record per vendor/product/slot, so forecasts can later be scored
-        # against the sales that slot actually got (inventory_movement).
-        COLS["predictions"].update_one(
-            {"vendorId": vendor.get("vendor_id"), "productId": label, "predictionType": "DEMAND",
-             "slotDate": slot[0].isoformat(), "window": SLOT_NAMES[slot[1]]},
-            {"$set": {"predicted": demand, "features": row, "updatedAt": datetime.datetime.utcnow()}},
-            upsert=True,
-        )
         safety = round(float(demand_bundle["safety_stock"].get(label, 0.0)), 1)
+        recommended = round(demand + safety, 1)
         # Expired stock cannot be sold, so it does not cover demand.
         stock = round(sum(_batch_remaining(b) for b in batches if _hours_to_expiry(vendor, b) > 0), 1)
+        incoming = round(requested.get(label, 0.0), 1)
+        refill = round(max(0.0, recommended - stock - incoming), 1)
+        suggested, suggested_kg = _suggest_batches(available.get(label, []), refill) if refill > 0 else ([], 0.0)
 
-        deficit = round(max(0.0, demand - stock), 1)
-        refill = round(deficit + safety, 1) if deficit > 0 else 0.0
+        # One record per vendor/product/window (same shape as the ML pipeline's
+        # rows), so forecasts can later be scored against that window's sales.
+        COLS["predictions"].update_one(
+            {"predictionType": "DEMAND", "vendorId": vendor.get("vendor_id"), "productId": label,
+             "windowStart": window_start},
+            {"$set": {"windowEnd": window_end, "numericValue": demand, "predictedValue": demand,
+                      "recommendedDispatch": refill, "inputFeatures": row, "modelVersion": "v1.0",
+                      "historySource": source, "generatedAt": datetime.datetime.utcnow()}},
+            upsert=True,
+        )
 
+        if refill > 0:
+            status = "Restock Needed"
+        elif incoming > 0 and stock < recommended:
+            status = "Covered by pending request"
+        else:
+            status = "Stock OK"
         forecasts.append({
-            "product_name": _field(batches[0], "product_name", default=label),
+            "product_name": names.get(label) or _field(batches[0], "product_name", default=label),
             "model_product": label,
             "predicted_demand": demand,
             "safety_stock": safety,
-            "recommended_stock": round(demand + safety, 1),
+            "recommended_stock": recommended,
             "current_stock": stock,
-            "deficit": deficit,
+            "requested_kg": incoming,
+            "deficit": round(max(0.0, demand - stock), 1),
             "refill_quantity": refill,
-            "restock_needed": deficit > 0,
-            "status": "Restock Needed" if deficit > 0 else "No Restock Needed",
-            "has_sales_history": bool(series) or snapshot is not None,
-            "batches": [_batch_chip(b) for b in batches],
+            "restock_needed": refill > 0,
+            "status": status,
+            "history_source": source,
+            "has_sales_history": source != "baseline",
+            "batches": [_batch_chip(b, vendor) for b in batches],
+            "suggested_batches": suggested,
+            "suggested_kg": suggested_kg,
+            "uncovered_kg": round(max(0.0, refill - suggested_kg), 1),
         })
 
     return forecasts, sorted(unsupported)
@@ -1267,22 +1482,35 @@ def _vendor_forecast(vendor, ctx):
 def _forecast_response(vendor, ctx):
     """Wrap vendor forecasts in the standard response envelope."""
     forecasts, unsupported = _vendor_forecast(vendor, ctx)
+    day, window = _slot_of(datetime.datetime.utcnow())
+    total = lambda key: round(sum(item[key] for item in forecasts), 1)
     response = {
         "vendor_id": vendor.get("vendor_id"),
+        # Demand is per sales window: morning (before 1 pm) or evening.
+        "window": {"date": day.isoformat(), "label": ("morning", "evening")[window]},
         "count": len(forecasts),
+        "summary": {
+            "predicted_demand": total("predicted_demand"),
+            "recommended_stock": total("recommended_stock"),
+            "current_stock": total("current_stock"),
+            "requested_kg": total("requested_kg"),
+            "refill_quantity": total("refill_quantity"),
+            "products_to_restock": sum(1 for item in forecasts if item["restock_needed"]),
+        },
         "forecast": forecasts,
         "unsupported_products": unsupported,
     }
     if unsupported:
         response["message"] = f"The demand model has no data for: {', '.join(unsupported)}"
-    elif not forecasts:
-        response["message"] = "No batches assigned to this vendor"
+    elif forecasts and all(item["history_source"] == "baseline" for item in forecasts):
+        response["message"] = "No sales recorded yet: these are baseline estimates for a shop like yours, and they adjust as sales come in."
     return response
 
 
 @app.get("/vendors/{vendor_id}/demand-forecast")
-def get_demand_forecast(vendor_id: str = Path(...)):
+def get_demand_forecast(vendor_id: str = Path(...), user: dict = Depends(current_user)):
     """Demand forecast for one vendor (the products it actually holds)."""
+    require_vendor(user, vendor_id)
     if not demand_bundle:
         return {"error": "Demand model not loaded"}
     vendor = _find_vendor(vendor_id)
@@ -1294,7 +1522,11 @@ def get_demand_forecast(vendor_id: str = Path(...)):
 # GET /demand-forecast — forecasts for every vendor with held batches, or a
 # single vendor when ?vendor_id= is supplied.
 @app.get("/demand-forecast")
-def get_all_demand_forecasts(vendor_id: Optional[str] = None):
+def get_all_demand_forecasts(vendor_id: Optional[str] = None, user: dict = Depends(current_user)):
+    if vendor_id:
+        require_vendor(user, vendor_id)
+    else:
+        require_role(user)
     if not demand_bundle:
         return {"error": "Demand model not loaded"}
 
@@ -1314,9 +1546,10 @@ def get_all_demand_forecasts(vendor_id: Optional[str] = None):
 
 # POST /festival-calendar — admin adds (or corrects) a festival window that the
 # demand model's isFestivalWindow / festivalTypeEnc features read.
-# Body: {"date": "2027-01-14", "festivalType": "harvestFestival", "windowDays": 3, "name": "Pongal"}
+# Body: {"date": "2027-01-15", "festivalType": "harvestFestival", "windowDays": 4, "festivalName": "Pongal", "region": "Tamil Nadu"}
 @app.post("/festival-calendar")
-def add_festival(data: dict = Body(...)):
+def add_festival(data: dict = Body(...), user: dict = Depends(current_user)):
+    require_role(user)
     if not demand_bundle:
         return {"error": "Demand model not loaded"}
     known = [str(c) for c in demand_bundle["festival_encoder"].classes_ if c != "none"]
@@ -1333,14 +1566,16 @@ def add_festival(data: dict = Body(...)):
     # Local midnight in UTC, matching how the rest of the backend stores times.
     start = datetime.datetime.combine(day, datetime.time()).astimezone(datetime.timezone.utc).replace(tzinfo=None)
     doc = {"date": start, "festivalType": festival_type, "windowDays": window_days,
-           "name": data.get("name", ""), "updated_at": datetime.datetime.utcnow()}
+           "festivalName": _field(data, "festivalName", "name", default=""),
+           "region": data.get("region", "Tamil Nadu"), "updated_at": datetime.datetime.utcnow()}
     COLS["festival_calendar"].update_one({"date": start, "festivalType": festival_type}, {"$set": doc}, upsert=True)
     return {"message": "Festival saved", "festival": doc}
 
 
 # GET /festival-calendar — every stored festival window, soonest first.
 @app.get("/festival-calendar")
-def list_festivals():
+def list_festivals(user: dict = Depends(current_user)):
+    require_role(user)
     festivals = list(COLS["festival_calendar"].find().sort("date", 1))
     for festival in festivals:
         festival["_id"] = str(festival["_id"])
@@ -1364,7 +1599,6 @@ STORAGE_ALIASES = {"refrigerated": "fridge"}
 
 
 def _shelf_life_hours(batch, has_fridge):
-    """Product shelf life for the vendor's storage: fridge vs room temperature."""
     """Product shelf life for the vendor's storage: fridge vs room temperature."""
     keys = ("shelf_life_fridge_hrs", "shelf_life_hours") if has_fridge else ("shelf_life_ambient_hrs",)
     name = _product_key(_field(batch, "product_name", "product_id"))
@@ -1478,9 +1712,10 @@ def _batch_evaluation(vendor, batch, weather):
 
 
 @app.get("/vendors/{vendor_id}/batches")
-def get_vendor_batches(vendor_id: str = Path(...)):
+def get_vendor_batches(vendor_id: str = Path(...), user: dict = Depends(current_user)):
     """Stock + spoilage evaluation for every batch this vendor holds,
     sorted worst stock first (remaining - threshold)."""
+    require_vendor(user, vendor_id)
     vendor = _find_vendor(vendor_id)
     if not vendor:
         return {"error": "Vendor not found"}
@@ -1496,8 +1731,9 @@ def get_vendor_batches(vendor_id: str = Path(...)):
 
 
 @app.get("/vendors/{vendor_id}/spoilage-risk")
-def get_vendor_spoilage_risk(vendor_id: str = Path(...)):
+def get_vendor_spoilage_risk(vendor_id: str = Path(...), user: dict = Depends(current_user)):
     """Spoilage risk for all held batches, plus a volume-weighted aggregate."""
+    require_vendor(user, vendor_id)
     if not spoilage_bundle:
         return {"error": "Spoilage model not loaded"}
     vendor = _find_vendor(vendor_id)
@@ -1534,14 +1770,15 @@ def get_vendor_spoilage_risk(vendor_id: str = Path(...)):
     }
 
 
-# POST /vendors/{vendor_id}/demands — vendor asks for stock: either one
-# specific available batch (items: [{batch_id}]) or quantities of mapped
-# products (items: [{product_id, quantity}]).
+# POST /vendors/{vendor_id}/demands — vendor asks for one specific available
+# batch (items: [{batch_id}]).
 @app.post("/vendors/{vendor_id}/demands")
 def create_demand(
     vendor_id: str = Path(...),
-    data: dict = Body(...)
+    data: dict = Body(...),
+    user: dict = Depends(current_user)
 ):
+    require_vendor(user, vendor_id)
 
     items = data.get("items", [])
 
@@ -1559,8 +1796,11 @@ def create_demand(
         if batch_id:
             if len(items) != 1:
                 return {"error": "Request one batch at a time"}
-            if not _find_vendor(vendor_id):
+            vendor = _find_vendor(vendor_id)
+            if not vendor:
                 return {"error": "Vendor not found"}
+            if _vendor_status(vendor) not in APPROVED_STATUSES:
+                return {"error": "Your shop is awaiting admin approval; batches can be requested once it is approved"}
             batch = COLS["batches"].find_one({
                 "batch_id": batch_id, "status": "available", "exposed": {"$ne": False}
             })
@@ -1578,36 +1818,9 @@ def create_demand(
             })
             continue
 
-        product_id = item.get("product_id")
-        quantity = item.get("quantity", 0)
-
-        if not product_id:
-            return {
-                "error": "product_id is required"
-            }
-
-        if quantity <= 0:
-            return {
-                "error": "Quantity must be greater than 0"
-            }
-
-        inventory = COLS["inventory"].find_one({
-            "vendor_id": vendor_id,
-            "product_id": product_id
-        })
-
-        if not inventory:
-            return {
-                "error": f"Product {product_id} is not mapped"
-            }
-
-        demand_items.append({
-            "product_id": product_id,
-            "product_name": inventory.get("product_name"),
-            "batch_number": inventory.get("batch_number"),
-            "inventory_id": inventory.get("inventory_id"),
-            "quantity": quantity
-        })
+        # Stock reaches a shop only as a batch, so plain product quantities are
+        # refused; confirmed product requests already stored still sync as before.
+        return {"error": "Request a specific batch from the available batches list"}
 
     demand = {
         "vendor_id": vendor_id,
@@ -1640,7 +1853,8 @@ def create_demand(
 # pending demand; batch requests assign the batch to this vendor (and reject
 # competing requests for the same batch).
 @app.post("/vendors/{vendor_id}/demands/{demand_id}/confirm")
-def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...)):
+def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...), user: dict = Depends(current_user)):
+    require_role(user)
     if not ObjectId.is_valid(demand_id):
         return {
             "error": "Invalid demand ID"
@@ -1695,7 +1909,9 @@ def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...)):
 # POST /vendors/{vendor_id}/demands/{demand_id}/reject — admin rejects a
 # pending demand with an optional reason (body: {"reason": "..."}).
 @app.post("/vendors/{vendor_id}/demands/{demand_id}/reject")
-def reject_demand(vendor_id: str = Path(...), demand_id: str = Path(...), data: dict = Body(default={})):
+def reject_demand(vendor_id: str = Path(...), demand_id: str = Path(...), data: dict = Body(default={}),
+                  user: dict = Depends(current_user)):
+    require_role(user)
     if not ObjectId.is_valid(demand_id):
         return {"error": "Invalid demand ID"}
     result = COLS["restock_requests"].update_one(
@@ -1711,8 +1927,9 @@ def reject_demand(vendor_id: str = Path(...), demand_id: str = Path(...), data: 
 # POST /vendors/{vendor_id}/batches/{batch_id}/receive — vendor confirms
 # delivery of an assigned batch (status assigned -> received).
 @app.post("/vendors/{vendor_id}/batches/{batch_id}/receive")
-def receive_batch(vendor_id: str = Path(...), batch_id: str = Path(...)):
+def receive_batch(vendor_id: str = Path(...), batch_id: str = Path(...), user: dict = Depends(current_user)):
     """Vendor confirms delivery of an assigned batch; closes the matching request."""
+    require_vendor(user, vendor_id)
     vendor = _find_vendor(vendor_id)
     if not vendor:
         return {"error": "Vendor not found"}
@@ -1728,6 +1945,12 @@ def receive_batch(vendor_id: str = Path(...), batch_id: str = Path(...)):
         {"vendor_id": {"$in": _vendor_id_values(vendor)}, "status": "confirmed", "items.batch_id": batch_id},
         {"$set": {"status": "synchronized", "received_at": now}}
     )
+    # Fresh stock of this product arrived, so the shop's low-stock alerts for it are settled.
+    same_product = [b["batch_id"] for b in COLS["batches"].find(
+        {"vendor_id": {"$in": _vendor_id_values(vendor)}, "product_id": batch.get("product_id")}, {"batch_id": 1})]
+    COLS["inventory_alerts"].update_many(
+        {"batch_id": {"$in": same_product}, "alert_status": "active"},
+        {"$set": {"alert_status": "resolved", "resolved_at": now, "resolved_by": f"received {batch_id}"}})
     COLS["logs"].insert_one({
         "type": "activity", "action": "receive_batch", "vendor_id": vendor["vendor_id"],
         "batch_id": batch_id, "timestamp": now,
@@ -1736,11 +1959,75 @@ def receive_batch(vendor_id: str = Path(...), batch_id: str = Path(...)):
     return {"message": "Batch assignment confirmed", "batch_id": batch_id, "status": "received"}
 
 
+# POST /vendors/{vendor_id}/batches/{batch_id}/return — vendor sends back (or
+# writes off) a held batch, e.g. expired or high spoilage risk. Body: {"reason": "..."}
+@app.post("/vendors/{vendor_id}/batches/{batch_id}/return")
+def return_batch(vendor_id: str = Path(...), batch_id: str = Path(...), data: dict = Body(default={}),
+                 user: dict = Depends(current_user)):
+    require_vendor(user, vendor_id)
+    vendor = _find_vendor(vendor_id)
+    if not vendor:
+        return {"error": "Vendor not found"}
+    batch = COLS["batches"].find_one({
+        "batch_id": batch_id, "vendor_id": {"$in": _vendor_id_values(vendor)}, "status": {"$in": HELD_STATUSES}})
+    if not batch:
+        return {"error": f"Batch {batch_id} is not held by this vendor"}
+    now = datetime.datetime.utcnow()
+    kg = _batch_remaining(batch)
+    reason = str(data.get("reason") or "returned")
+    # Same optimistic lock as /orders, so a sale and a return cannot both take the stock.
+    if COLS["batches"].update_one({"_id": batch["_id"], "updated_at": batch.get("updated_at")}, {"$set": {
+        "status": "returned", "returned_kg": kg, "remaining_volume_kg": 0, "return_reason": reason,
+        "returned_at": now, "updated_at": now,
+    }}).matched_count == 0:
+        return {"error": f"Batch {batch_id} changed meanwhile, please retry"}
+    # Assignment already added this batch to the inventory row, so take it back out.
+    _adjust_inventory(vendor["vendor_id"], batch, -kg)
+    COLS["inventory_movement"].insert_one({
+        "vendorId": vendor["vendor_id"], "productId": _field(batch, "product_id", "product_name"),
+        "batchId": batch_id, "movementType": "return", "quantity": round(kg, 3), "occurredAt": now,
+        "triggeredBy": user["sub"], "metadata": {"previousQty": kg, "newQty": 0, "reason": reason},
+    })
+    COLS["inventory_alerts"].update_many({"batch_id": batch_id, "alert_status": "active"},
+                                         {"$set": {"alert_status": "resolved", "resolved_at": now,
+                                                   "resolved_by": f"returned {batch_id}"}})
+    COLS["logs"].insert_one({
+        "type": "activity", "action": "return_batch", "vendor_id": vendor["vendor_id"], "batch_id": batch_id,
+        "timestamp": now, "message": f"Vendor {vendor['vendor_id']} returned batch {batch_id} ({round(kg, 2)} kg): {reason}",
+    })
+    return {"message": "Batch returned", "batch_id": batch_id, "returned_kg": round(kg, 3), "status": "returned"}
+
+
+# GET /orders — every order, newest first (admin). Optional vendor_id filter.
+@app.get("/orders")
+def list_orders(vendor_id: Optional[str] = None, user: dict = Depends(current_user)):
+    require_role(user)
+    orders = list(COLS["orders"].find({"vendor_id": vendor_id} if vendor_id else {}).sort("_id", -1))
+    for order in orders:
+        order["_id"] = str(order["_id"])
+    return {"count": len(orders), "orders": orders}
+
+
+# GET /inventory-alerts — low-stock / stockout alerts written by /orders (admin).
+# They resolve themselves when the shop receives a batch of that product or returns the batch.
+@app.get("/inventory-alerts")
+def list_inventory_alerts(status: Optional[str] = None, user: dict = Depends(current_user)):
+    require_role(user)
+    alerts = list(COLS["inventory_alerts"].find({"alert_status": status} if status else {}).sort("_id", -1))
+    for alert in alerts:
+        alert["_id"] = str(alert["_id"])
+    return {"count": len(alerts), "alerts": alerts}
+
+
 # POST /orders — customer purchase (vendor_id + quantity_kg, optional
 # batch_id / product filter); writes order, movements and stock alerts.
 @app.post("/orders")
-def create_order(data: dict = Body(...)):
+def create_order(data: dict = Body(...), user: dict = Depends(current_user)):
     """Customer purchase: deducts kg from a batch (or FEFO across the vendor's batches)."""
+    require_role(user, "vendor", "customer")
+    if user["role"] == "vendor":
+        require_vendor(user, str(data.get("vendor_id") or ""))
+    customer_id = user["sub"] if user["role"] == "customer" else data.get("customer_id")
     vendor = _find_vendor(str(data.get("vendor_id") or ""))
     if not vendor:
         return {"error": "Vendor not found"}
@@ -1773,7 +2060,7 @@ def create_order(data: dict = Body(...)):
         return {"error": f"Only {round(available, 2)} kg available{note}"}
 
     now = datetime.datetime.utcnow()
-    left, deductions, alerts = quantity, [], []
+    left, taken = quantity, []
     for batch in batches:
         if left <= 0:
             break
@@ -1787,15 +2074,26 @@ def create_order(data: dict = Body(...)):
         # Optimistic lock on updated_at so two concurrent sales cannot oversell a batch.
         if COLS["batches"].update_one({"_id": batch["_id"], "updated_at": batch.get("updated_at")},
                                       {"$set": update}).matched_count == 0:
-            return {"error": f"Batch {batch['batch_id']} changed during the sale, please retry",
-                    "deducted": deductions}
+            # All or nothing: put back what this sale already took, so no stock goes missing.
+            for done, done_before, _, _ in taken:
+                undo = {"$set": {"remaining_volume_kg": done_before, "status": done.get("status"),
+                                 "sell_through_rate": done.get("sell_through_rate"),
+                                 "updated_at": datetime.datetime.utcnow()}}
+                if not done.get("stocked_out_at"):
+                    undo["$unset"] = {"stocked_out_at": ""}
+                COLS["batches"].update_one({"_id": done["_id"], "updated_at": now}, undo)
+            return {"error": f"Batch {batch['batch_id']} changed during the sale, please retry"}
         left -= take
+        taken.append((batch, before, take, after))
+
+    deductions, alerts = [], []
+    for batch, before, take, after in taken:
         deductions.append({"batch_id": batch["batch_id"], "quantity_kg": round(take, 3), "remaining_kg": after})
         _adjust_inventory(vendor["vendor_id"], batch, -take)
         COLS["inventory_movement"].insert_one({
             "vendorId": vendor["vendor_id"], "productId": _field(batch, "product_id", "product_name"),
             "batchId": batch["batch_id"], "movementType": "sale", "quantity": round(take, 3),
-            "occurredAt": now, "triggeredBy": data.get("customer_id") or "customer",
+            "occurredAt": now, "triggeredBy": customer_id or user["sub"],
             "metadata": {"previousQty": before, "newQty": after},
         })
         threshold = _batch_threshold(batch)
@@ -1814,7 +2112,7 @@ def create_order(data: dict = Body(...)):
     order = {
         "order_id": f"ORD-{now.strftime('%Y%m%d%H%M%S%f')}",
         "vendor_id": vendor["vendor_id"],
-        "user_id": data.get("customer_id"),
+        "user_id": customer_id,
         "product_name": product or batches[0].get("product_name"),
         "quantity_kg": quantity,
         "batches": deductions,
@@ -1828,7 +2126,8 @@ def create_order(data: dict = Body(...)):
 # POST /vendors/{vendor_id}/inventory/sync — apply confirmed product-based
 # demands to inventory and mark those requests "synchronized".
 @app.post("/vendors/{vendor_id}/inventory/sync")
-def sync_inventory(vendor_id: str = Path(...)):
+def sync_inventory(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    require_vendor(user, vendor_id)
     # Batch requests are closed by /batches/{id}/receive, not by a product sync.
     demands = list(
         COLS["restock_requests"].find({
@@ -1865,9 +2164,15 @@ def sync_inventory(vendor_id: str = Path(...)):
                     },
                     "$set": {
                         "last_updated": datetime.datetime.utcnow().isoformat()
+                    },
+                    # A confirmed demand for a product with no inventory row creates the row.
+                    "$setOnInsert": {
+                        "product_name": item.get("product_name", ""),
+                        "batch_number": item.get("batch_number", ""),
+                        "created_at": datetime.datetime.utcnow().isoformat()
                     }
                 },
-                upsert=False
+                upsert=True
             )
             updated.append({
                 "product_id": pid,
@@ -1898,7 +2203,8 @@ def sync_inventory(vendor_id: str = Path(...)):
 # GET /pending/vendors — vendors awaiting admin approval (status or
 # verificationStatus == "pending").
 @app.get("/pending/vendors")
-def get_pending_vendors():
+def get_pending_vendors(user: dict = Depends(current_user)):
+    require_role(user)
     vendors = list(
         COLS["vendors"].find({
             "$or": [
@@ -1921,9 +2227,33 @@ def get_pending_vendors():
     }
 
 
+# POST /vendors/{vendor_id}/status — admin approves, rejects or suspends a
+# vendor. Body: {"status": "active" | "rejected" | "suspended"}
+@app.post("/vendors/{vendor_id}/status")
+def set_vendor_status(vendor_id: str = Path(...), data: dict = Body(...), user: dict = Depends(current_user)):
+    require_role(user)
+    new_status = data.get("status")
+    if new_status not in ("active", "rejected", "suspended"):
+        return {"error": "status must be active, rejected or suspended"}
+    vendor = _find_vendor(vendor_id)
+    if not vendor:
+        return {"error": "Vendor not found"}
+    # Write both fields: seed vendors read verificationStatus, app-created ones read status.
+    COLS["vendors"].update_one({"_id": vendor["_id"]}, {"$set": {
+        "status": new_status, "verificationStatus": new_status, "updated_at": datetime.datetime.utcnow()}})
+    COLS["logs"].insert_one({
+        "type": "activity", "action": "set_vendor_status", "vendor_id": vendor.get("vendor_id"),
+        "status": new_status, "timestamp": datetime.datetime.utcnow(),
+        "message": f"Vendor {vendor.get('vendor_id')} set to {new_status}",
+    })
+    return {"message": f"Vendor {new_status}", "vendor_id": vendor.get("vendor_id"), "status": new_status}
+
+
 # GET /users/{user_id} — vendor profile by user_id, vendor_id or Mongo _id.
 @app.get("/users/{user_id}")
-def get_user(user_id: str = Path(...)):
+def get_user(user_id: str = Path(...), user: dict = Depends(current_user)):
+    if user["role"] != "admin" and user_id != user["sub"]:
+        require_vendor(user, user_id)
     query = {
         "$or": [
             {
@@ -1957,26 +2287,46 @@ def get_user(user_id: str = Path(...)):
 # POST /restock-requests — admin/vendor creates a restock request; also
 # opens a pending order linked to the request.
 @app.post("/restock-requests")
-def create_restock_request(data: dict = Body(...)):
+def create_restock_request(data: dict = Body(...), user: dict = Depends(current_user)):
     vendor_id = data.get("vendor_id")
 
     if not vendor_id:
         return {
             "error": "vendor_id is required"
         }
+    require_vendor(user, str(vendor_id))
+    if not _find_vendor(str(vendor_id)):
+        return {"error": f"Vendor {vendor_id} not found"}
 
-    data.setdefault(
-        "status",
-        "pending"
-    )
+    # Store only known fields: the body comes straight from the client.
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        return {"error": "items must be a non-empty list"}
+    clean_items = []
+    for item in items:
+        if not isinstance(item, dict) or not (item.get("product_id") or item.get("product_name")):
+            return {"error": "Each item needs a product_id or product_name"}
+        quantity = item.get("quantity")
+        if isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or quantity <= 0:
+            return {"error": "Each item needs a quantity greater than 0"}
+        clean_items.append({k: item[k] for k in ("product_id", "product_name", "quantity") if k in item})
 
-    req = COLS["restock_requests"].insert_one(data)
+    request_doc = {
+        "vendor_id": vendor_id,
+        "items": clean_items,
+        "priority": data.get("priority", "normal"),
+        "notes": str(data.get("notes", "")),
+        "status": "pending",
+        "created_at": datetime.datetime.utcnow(),
+    }
+    req = COLS["restock_requests"].insert_one(request_doc)
     req_id = str(req.inserted_id)
 
     order = COLS["orders"].insert_one({
         "vendor_id": vendor_id,
         "restock_request_id": req_id,
-        "items": data.get("items", []),
+        "order_type": "restock",  # not a customer sale
+        "items": clean_items,
         "status": "pending"
     })
 
@@ -1997,8 +2347,12 @@ def create_restock_request(data: dict = Body(...)):
 @app.get("/restock-requests")
 def get_restock_requests(
     status: str = None,
-    vendor_id: str = None
+    vendor_id: str = None,
+    user: dict = Depends(current_user)
 ):
+    require_role(user, "vendor")
+    if user["role"] == "vendor":
+        vendor_id = user["vendor_id"]  # vendors only see their own requests
     query = {}
 
     if status:
@@ -2095,7 +2449,7 @@ def login_customer(data: dict = Body(...)):
     if not login_id or not password:
         raise HTTPException(status_code=400, detail="Login email/phone and password are required")
 
-    user = COLS["users"].find_one({"$or": [{"email": login_id}, {"phone": login_id}]})
+    user = _find_login_user(login_id)
     if not user or not user.get("password_hash") or not check_password(password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email/phone or password")
     if user.get("role") != "customer":
@@ -2120,7 +2474,8 @@ def login_customer(data: dict = Body(...)):
         "timestamp": datetime.datetime.utcnow().isoformat()
     })
 
-    response = {"message": "Customer login successful", "customer": customer}
+    response = {"message": "Customer login successful", "customer": customer,
+                "token": issue_token(customer_id, "customer")}
     if location:
         response["nearby_vendors"] = find_nearby_vendors(
             location["latitude"], location["longitude"],

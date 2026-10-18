@@ -2,6 +2,12 @@ import { API_BASE } from "./config";
 
 export type StringMap = Record<string, unknown>;
 
+/** The backend stores UTC without a zone ("2026-10-18T05:48:05"); read it as UTC, not local time. */
+export function parseServerDate(value: unknown): Date {
+  const text = String(value);
+  return new Date(/T[\d:.]+$/.test(text) ? `${text}Z` : text);
+}
+
 export type VendorProfile = StringMap & {
   _id?: string;
   vendor_id?: string | null;
@@ -58,6 +64,8 @@ export type BatchChip = {
   remaining_kg?: number;
   status?: string;
   received_at?: string | null;
+  expired?: boolean;
+  hours_to_expiry?: number;
 };
 
 export type ForecastItem = {
@@ -72,7 +80,25 @@ export type ForecastItem = {
   restock_needed?: boolean;
   status?: string;
   has_sales_history?: boolean;
+  /** Where the history inputs came from: real sales, a pipeline snapshot, or the new-shop baseline. */
+  history_source?: "sales" | "snapshot" | "baseline";
+  /** kg in this shop's pending batch requests. */
+  requested_kg?: number;
   batches?: BatchChip[];
+  /** Available batches that would cover the refill, freshest first. */
+  suggested_batches?: BatchChip[];
+  suggested_kg?: number;
+  /** Refill kg no available batch can cover yet. */
+  uncovered_kg?: number;
+};
+
+export type ForecastSummary = {
+  predicted_demand: number;
+  recommended_stock: number;
+  current_stock: number;
+  requested_kg: number;
+  refill_quantity: number;
+  products_to_restock: number;
 };
 
 /** A batch held by the vendor, with its stock state and model spoilage risk. */
@@ -90,6 +116,8 @@ export type VendorBatch = StringMap & {
   risk_label?: "Low" | "Medium" | "High";
   probabilities?: Record<string, number>;
   action?: string;
+  hours_to_expiry?: number;
+  expired?: boolean;
 };
 
 export type AvailableBatch = StringMap & {
@@ -129,6 +157,15 @@ export type ActivityLog = StringMap & {
   timestamp?: string;
 };
 
+let authToken = "";
+let onUnauthorized: (() => void) | null = null;
+
+/** Bearer token sent with every request (set on sign-in, cleared on sign-out). */
+export function setAuthToken(token: string, onExpired: (() => void) | null = null) {
+  authToken = token;
+  onUnauthorized = onExpired;
+}
+
 /**
  * The backend is a plain FastAPI app that often answers 200 with an
  * `{ "error": ... }` body, so failures are normalized here into thrown
@@ -143,7 +180,10 @@ async function request<T = StringMap>(
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method: options.method ?? "GET",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
   } catch {
@@ -160,6 +200,8 @@ async function request<T = StringMap>(
   }
 
   if (!response.ok) {
+    // Expired or missing token: drop the session so the app returns to login.
+    if (response.status === 401 && authToken) onUnauthorized?.();
     const payload = data as StringMap | null;
     const message =
       (payload?.detail as string) ||
@@ -179,7 +221,14 @@ async function request<T = StringMap>(
 export const api = {
   // ---- auth ----------------------------------------------------------
   async login(login: string, password: string) {
-    const data = await request<{ message?: string; user_id: string; role?: string; email?: string }>(
+    const data = await request<{
+      message?: string;
+      user_id: string;
+      role?: string;
+      email?: string;
+      vendor_id?: string | null;
+      token: string;
+    }>(
       "/login",
       { method: "POST", body: { login, password } },
     );
@@ -209,6 +258,7 @@ export const api = {
       message?: string;
       customer?: CustomerProfile;
       nearby_vendors?: NearbyVendor[];
+      token: string;
     }>("/customers/login", {
       method: "POST",
       body: { login, password, location },
@@ -270,10 +320,13 @@ export const api = {
   },
 
   async getForecast(vendorKey: string) {
-    const data = await request<{ forecast?: ForecastItem[]; message?: string }>(
-      `/vendors/${encodeURIComponent(vendorKey)}/demand-forecast`,
-    );
-    return { forecast: data?.forecast ?? [], message: data?.message };
+    const data = await request<{
+      forecast?: ForecastItem[];
+      summary?: ForecastSummary;
+      window?: { date: string; label: string };
+      message?: string;
+    }>(`/vendors/${encodeURIComponent(vendorKey)}/demand-forecast`);
+    return { forecast: data?.forecast ?? [], summary: data?.summary, window: data?.window, message: data?.message };
   },
 
   async getRisk(vendorKey: string): Promise<RiskReport> {
@@ -325,6 +378,22 @@ export const api = {
     return request<{ message?: string; alerts?: { alert_message?: string }[] }>("/orders", {
       method: "POST",
       body: { vendor_id: vendorKey, batch_id: batchId, quantity_kg: quantityKg },
+    });
+  },
+
+  /** Send back (or write off) a held batch, e.g. expired or high risk. */
+  returnBatch(vendorKey: string, batchId: string, reason: string) {
+    return request<{ message?: string; returned_kg?: number }>(
+      `/vendors/${encodeURIComponent(vendorKey)}/batches/${encodeURIComponent(batchId)}/return`,
+      { method: "POST", body: { reason } },
+    );
+  },
+
+  /** Customer purchase: the backend sells from the vendor's first-expiring fresh batches. */
+  buy(vendorKey: string, productName: string, quantityKg: number) {
+    return request<{ message?: string; order?: StringMap }>("/orders", {
+      method: "POST",
+      body: { vendor_id: vendorKey, product_name: productName, quantity_kg: quantityKg },
     });
   },
 
