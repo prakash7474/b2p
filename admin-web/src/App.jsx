@@ -472,9 +472,35 @@ function SnapshotRow({ icon: Icon, label, value }) {
   );
 }
 
+// The shop surroundings the demand model was trained on.
+const LOCALITY_OPTIONS = [
+  ["commercial_offices", "Offices / commercial"],
+  ["institutional", "Institutional"],
+  ["mixed", "Mixed"],
+  ["residential_budget", "Residential, budget"],
+  ["residential_premium", "Residential, premium"]
+];
+
 function Vendors({ vendors, search, setSearch, refresh }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
+
+  const setLocality = async (vendor, locality) => {
+    const id = getValue(vendor, ["vendor_id", "_id"], "");
+    try {
+      setBusy(id);
+      const data = await request(`/vendors/${id}/locality`, {
+        method: "POST",
+        body: JSON.stringify({ locality_tier: locality })
+      });
+      setMessage(data.error || `${id}: locality set to ${locality}. Its demand forecast now uses this area.`);
+      await refresh();
+    } catch (error) {
+      setMessage(error.message || "Unable to update locality.");
+    } finally {
+      setBusy("");
+    }
+  };
 
   const setStatus = async (vendor, status) => {
     const id = getValue(vendor, ["vendor_id", "_id"], "");
@@ -520,6 +546,7 @@ function Vendors({ vendors, search, setSearch, refresh }) {
                 <th>Name</th>
                 <th>Email</th>
                 <th>Phone</th>
+                <th>Locality</th>
                 <th>Status</th>
                 <th>Actions</th>
               </tr>
@@ -546,6 +573,21 @@ function Vendors({ vendors, search, setSearch, refresh }) {
                     </td>
                     <td>{getValue(vendor, ["email"], "-")}</td>
                     <td>{getValue(vendor, ["phone", "mobile"], "-")}</td>
+                    <td>
+                      <select
+                        aria-label={`Locality of ${getValue(vendor, ["vendor_id", "_id"], "")}`}
+                        value={(() => {
+                          const tier = getValue(vendor, ["localityTier", "locality_tier"], "mixed");
+                          return tier === "commercial" ? "commercial_offices" : tier;
+                        })()}
+                        disabled={busy === getValue(vendor, ["vendor_id", "_id"], "")}
+                        onChange={(e) => setLocality(vendor, e.target.value)}
+                      >
+                        {LOCALITY_OPTIONS.map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    </td>
                     <td>
                       <span className={statusClass(status)}>
                         {formatStatus(status)}

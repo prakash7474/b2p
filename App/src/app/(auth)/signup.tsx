@@ -4,11 +4,20 @@ import { useState } from "react";
 import { StyleSheet, Switch, Text, TouchableOpacity, View } from "react-native";
 
 import { AuthShell } from "@/src/components/auth-shell";
-import { Button, FieldInput, FormField, PasswordField } from "@/src/components/controls";
+import { Button, FieldInput, FormField, PasswordField, SelectField } from "@/src/components/controls";
 import { AlertBox } from "@/src/components/status";
 import { messageOf, useAuth } from "@/src/lib/auth";
 import { reverseGeocode, useLiveLocation } from "@/src/lib/use-live-location";
 import { colors, fonts, radius } from "@/src/theme";
+
+// The surroundings the demand model was trained on; sales differ about 2x between them.
+const LOCALITY_OPTIONS = [
+  { value: "commercial_offices", label: "Offices / commercial area" },
+  { value: "institutional", label: "Near a college, hospital or institution" },
+  { value: "mixed", label: "Mixed homes and shops" },
+  { value: "residential_budget", label: "Residential, budget" },
+  { value: "residential_premium", label: "Residential, premium" },
+];
 
 function generateVendorId(): string {
   return `VND-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -19,6 +28,7 @@ export default function SignUpScreen() {
   const { location, error: locationError, capturing, capture } = useLiveLocation();
 
   const [shopName, setShopName] = useState("");
+  const [localityTier, setLocalityTier] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [phone, setPhone] = useState("");
@@ -47,6 +57,10 @@ export default function SignUpScreen() {
       setError("Enter a valid email address.");
       return;
     }
+    if (!localityTier) {
+      setError("Choose what kind of area your shop is in.");
+      return;
+    }
     if (!location) {
       setError("Capture your live shop location before creating the account.");
       return;
@@ -62,6 +76,7 @@ export default function SignUpScreen() {
       await signUp({
         vendorId: generateVendorId(),
         shopName,
+        localityTier,
         email,
         password,
         phone,
@@ -77,7 +92,7 @@ export default function SignUpScreen() {
     }
   };
 
-  const canSubmit = Boolean(shopName.trim() && email.trim() && password && location && atShop);
+  const canSubmit = Boolean(shopName.trim() && localityTier && email.trim() && password && location && atShop);
 
   return (
     <AuthShell
@@ -105,6 +120,15 @@ export default function SignUpScreen() {
           value={shopName}
           onChangeText={setShopName}
           placeholder="e.g. Sunrise Fresh Store"
+        />
+      </FormField>
+
+      <FormField label="Shop Area *" hint="Used to estimate demand before your shop has sales.">
+        <SelectField
+          value={localityTier}
+          onValueChange={setLocalityTier}
+          options={LOCALITY_OPTIONS}
+          placeholder="What kind of area is your shop in?"
         />
       </FormField>
 

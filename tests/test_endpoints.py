@@ -914,3 +914,20 @@ def test_new_shop_gets_baseline_forecast_for_every_product(client, seeded):
     assert idli["requested_kg"] == 15.0
     assert idli["refill_quantity"] == round(idli["recommended_stock"] - 15.0, 1)
     assert idli["suggested_batches"] == []
+
+
+def test_locality_is_validated_and_drives_the_baseline_forecast(client, seeded):
+    bad = client.post("/vendors", json={"vendor_id": "V960", "shop_name": "X", "locality_tier": "downtown"}).json()
+    assert bad["error"].startswith("locality_tier must be one of")
+    ok = client.post("/vendors", json={"vendor_id": "V961", "shop_name": "Y", "locality_tier": "commercial"}).json()
+    assert ok["vendor"]["locality_tier"] == "commercial_offices"  # alias normalised
+
+    seeded.products.insert_one({"product_id": "P001", "product_name": "Idli Batter"})
+    demand = {}
+    for tier in ("residential_budget", "commercial_offices"):
+        assert client.post(f"/vendors/{ACTIVE_VENDOR}/locality", json={"locality_tier": tier}).json()["locality_tier"] == tier
+        vendor = seeded.vendors.find_one({"vendor_id": ACTIVE_VENDOR})
+        assert vendor["locality_tier"] == vendor["localityTier"] == tier
+        demand[tier] = client.get(f"/vendors/{ACTIVE_VENDOR}/demand-forecast").json()["forecast"][0]["predicted_demand"]
+    # office areas sell far more batter than budget housing in the training data
+    assert demand["commercial_offices"] > demand["residential_budget"] * 1.5

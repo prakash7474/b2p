@@ -35,6 +35,8 @@ type SavedSession = { session: Session; customer?: CustomerProfile | null };
 export type SignUpInput = {
   vendorId: string;
   shopName: string;
+  /** Shop surroundings; one of the demand model's locality tiers. */
+  localityTier: string;
   email: string;
   password: string;
   phone: string;
@@ -181,6 +183,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const result = await api.createVendor({
         vendor_id: input.vendorId,
         shop_name: input.shopName.trim(),
+        locality_tier: input.localityTier,
         email,
         password: input.password,
         phone: input.phone.trim(),

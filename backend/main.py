@@ -601,6 +601,10 @@ def create_vendor(data: dict = Body(...), user: Optional[dict] = Depends(optiona
     if email and _find_login_user(email):
         return {"error": "User with this email already exists"}
 
+    locality = _locality_tier(data.get("locality_tier", "mixed"))
+    if not locality:
+        return {"error": f"locality_tier must be one of: {', '.join(LOCALITY_TIERS)}"}
+
     location = data.get("location", {})
     vendor_location = {
         "latitude": location.get("latitude", data.get("latitude")),
@@ -613,7 +617,7 @@ def create_vendor(data: dict = Body(...), user: Optional[dict] = Depends(optiona
         "vendor_id": vendor_id,
         "shop_name": data.get("shop_name", ""),
         "owner_name": data.get("owner_name", ""),
-        "locality_tier": data.get("locality_tier", "mixed"),
+        "locality_tier": locality,
         "status": data.get("status", "pending") if is_admin else "pending",
         "location": vendor_location,
         "email": email or "",
@@ -1253,6 +1257,14 @@ def _find_vendor(vendor_id):
 HISTORY_FEATURES = ["lag1", "lag7", "sameSlot4WeekMean", "rolling7DayMean", "rolling7DayStd", "recentTrend"]
 # Vendors store "commercial"; the model was trained on "commercial_offices".
 LOCALITY_ALIASES = {"commercial": "commercial_offices"}
+# The shop surroundings the demand model was trained on; demand differs ~2x between them.
+LOCALITY_TIERS = ["commercial_offices", "institutional", "mixed", "residential_budget", "residential_premium"]
+
+
+def _locality_tier(value):
+    """A known locality tier for ``value`` (aliases allowed), else None."""
+    tier = LOCALITY_ALIASES.get(value, value)
+    return tier if tier in LOCALITY_TIERS else None
 
 
 def _history_features(series):
@@ -1398,7 +1410,7 @@ def _vendor_forecast(vendor, ctx):
             history[label] = snap.get("featureVector") or {}
 
     locality = _field(vendor, "localityTier", "locality_tier", default="mixed")
-    locality = LOCALITY_ALIASES.get(locality, locality)
+    locality = _locality_tier(locality) or "mixed"
     vendor_features = {
         "localityTierEnc": _encode(demand_bundle["locality_encoder"], locality,
                                    _encode(demand_bundle["locality_encoder"], "mixed")),
@@ -2225,6 +2237,27 @@ def get_pending_vendors(user: dict = Depends(current_user)):
         "count": len(vendors),
         "vendors": vendors
     }
+
+
+# POST /vendors/{vendor_id}/locality — admin corrects a shop's locality tier,
+# which drives its demand forecast. Body: {"locality_tier": "residential_budget"}
+@app.post("/vendors/{vendor_id}/locality")
+def set_vendor_locality(vendor_id: str = Path(...), data: dict = Body(...), user: dict = Depends(current_user)):
+    require_role(user)
+    locality = _locality_tier(data.get("locality_tier"))
+    if not locality:
+        return {"error": f"locality_tier must be one of: {', '.join(LOCALITY_TIERS)}"}
+    vendor = _find_vendor(vendor_id)
+    if not vendor:
+        return {"error": "Vendor not found"}
+    # Write both spellings: seed vendors carry localityTier, which the forecast reads first.
+    COLS["vendors"].update_one({"_id": vendor["_id"]}, {"$set": {
+        "locality_tier": locality, "localityTier": locality, "updated_at": datetime.datetime.utcnow()}})
+    COLS["logs"].insert_one({
+        "type": "activity", "action": "set_vendor_locality", "vendor_id": vendor.get("vendor_id"),
+        "timestamp": datetime.datetime.utcnow(), "message": f"Vendor {vendor.get('vendor_id')} locality set to {locality}",
+    })
+    return {"message": "Locality updated", "vendor_id": vendor.get("vendor_id"), "locality_tier": locality}
 
 
 # POST /vendors/{vendor_id}/status — admin approves, rejects or suspends a
