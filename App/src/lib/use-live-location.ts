@@ -12,6 +12,16 @@ export type CapturedLocation = {
 };
 
 /**
+ * Options for a single capture.
+ *
+ * `onFix` is called with each improving fix while the best-fix window runs,
+ * so callers can show accuracy updating live instead of only the final value.
+ */
+export type CaptureOptions = {
+  onFix?: (fix: CapturedLocation) => void;
+};
+
+/**
  * Captures the device's live GPS position. Used during vendor sign-up so
  * the shop's latitude/longitude come from where the person actually is.
  */
@@ -20,7 +30,7 @@ export function useLiveLocation() {
   const [error, setError] = useState("");
   const [capturing, setCapturing] = useState(false);
 
-  const capture = useCallback(async (): Promise<CapturedLocation | null> => {
+  const capture = useCallback(async (options: CaptureOptions = {}): Promise<CapturedLocation | null> => {
     setCapturing(true);
     setError("");
 
@@ -45,7 +55,7 @@ export function useLiveLocation() {
 
       // A single fix right after the GPS wakes up can be off by tens of metres,
       // so take fixes for a short window and keep the most accurate one.
-      const best = await captureBestFix();
+      const best = await captureBestFix(options.onFix);
       const captured =
         best ??
         toCaptured(
@@ -175,7 +185,7 @@ const BEST_FIX_TARGET_METRES = 10;
  * shop registration. Resolves with null if the watcher never delivers a fix —
  * callers fall back to a single `getCurrentPositionAsync` request.
  */
-function captureBestFix(): Promise<CapturedLocation | null> {
+function captureBestFix(onFix?: (fix: CapturedLocation) => void): Promise<CapturedLocation | null> {
   return new Promise<CapturedLocation | null>((resolve) => {
     let best: CapturedLocation | null = null;
     let bestAccuracy = Number.POSITIVE_INFINITY;
@@ -208,6 +218,7 @@ function captureBestFix(): Promise<CapturedLocation | null> {
 
         best = fix;
         bestAccuracy = accuracy;
+        onFix?.(fix);
         if (bestAccuracy <= BEST_FIX_TARGET_METRES) finish();
       },
     )

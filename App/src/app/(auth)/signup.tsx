@@ -7,7 +7,11 @@ import { AuthShell } from "@/src/components/auth-shell";
 import { Button, FieldInput, FormField, PasswordField, SelectField } from "@/src/components/controls";
 import { AlertBox } from "@/src/components/status";
 import { messageOf, useAuth } from "@/src/lib/auth";
-import { reverseGeocode, useLiveLocation } from "@/src/lib/use-live-location";
+import {
+  reverseGeocode,
+  useLiveLocation,
+  type CapturedLocation,
+} from "@/src/lib/use-live-location";
 import { colors, fonts, radius } from "@/src/theme";
 
 // The surroundings the demand model was trained on; sales differ about 2x between them.
@@ -26,6 +30,8 @@ function generateVendorId(): string {
 export default function SignUpScreen() {
   const { signUp } = useAuth();
   const { location, error: locationError, capturing, capture } = useLiveLocation();
+  /** Best fix seen so far while the capture window is open — shown live. */
+  const [liveFix, setLiveFix] = useState<CapturedLocation | null>(null);
 
   const [shopName, setShopName] = useState("");
   const [localityTier, setLocalityTier] = useState("");
@@ -40,13 +46,17 @@ export default function SignUpScreen() {
 
   const captureLocation = async () => {
     setError("");
-    const captured = await capture();
+    setLiveFix(null);
+    const captured = await capture({ onFix: setLiveFix });
 
     if (captured && !address.trim()) {
       const pretty = await reverseGeocode(captured.latitude, captured.longitude);
       if (pretty) setAddress(pretty);
     }
   };
+
+  const accuracyText =
+    liveFix?.accuracy != null ? `± ${Math.round(liveFix.accuracy)} m` : null;
 
   const submit = async () => {
     if (!shopName.trim() || !email.trim() || !password) {
@@ -192,6 +202,16 @@ export default function SignUpScreen() {
             : "Stand at your shop’s location, then capture your live GPS position."}
         </Text>
 
+        {/* Accuracy updates as each better fix arrives during the capture window. */}
+        {capturing ? (
+          <View style={styles.liveAccuracyRow}>
+            <MaterialCommunityIcons name="crosshairs-gps" size={12} color={colors.primary} />
+            <Text style={styles.liveAccuracyText}>
+              {accuracyText ? `Reading GPS… ${accuracyText}` : "Reading GPS… acquiring first fix"}
+            </Text>
+          </View>
+        ) : null}
+
         {location ? (
           <View style={styles.coordinates}>
             <View style={styles.coordinateRow}>
@@ -336,6 +356,16 @@ const styles = StyleSheet.create({
     color: colors.muted,
     lineHeight: 15,
     fontFamily: fonts.regular,
+  },
+  liveAccuracyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  liveAccuracyText: {
+    fontSize: 10,
+    color: colors.primary,
+    fontFamily: fonts.semibold,
   },
   coordinates: {
     backgroundColor: colors.surface,
