@@ -9,7 +9,6 @@ __pycache__/
 .venv/
 venv/
 env/
-
 node_modules/
 dist/
 
@@ -26,8 +25,16 @@ htmlcov/
 # Additional files and folders
 backend-smoke.err
 credit.txt
-test,py
+test.py
 AGENTS.md
 seed.py
 AGENTS.md
 db_backups/
+
+
+# Alternate backend app variants (candidates) — backend/main.py is the real app
+backend/b2p_app_*.py
+
+tests/test_*.py
+
+backend/b2p*.md

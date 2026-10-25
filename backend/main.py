@@ -596,7 +596,8 @@ def create_vendor(data: dict = Body(...), user: Optional[dict] = Depends(optiona
     phone = data.get("phone", "")
 
     if vendor_id and COLS["vendors"].find_one({"vendor_id": vendor_id}):
-        return {"error": "Vendor with this vendor_id already exists"}
+        # 409 so clients can tell a clash apart from a successful create.
+        raise HTTPException(status_code=409, detail="Vendor with this vendor_id already exists")
 
     if email and _find_login_user(email):
         return {"error": "User with this email already exists"}
@@ -682,9 +683,7 @@ def get_vendor(vendor_id: str = Path(...), user: dict = Depends(current_user)):
     vendor = COLS["vendors"].find_one(query)
 
     if vendor is None:
-        return {
-            "error": "Vendor not found"
-        }
+        raise HTTPException(status_code=404, detail="Vendor not found")
 
     vendor["_id"] = str(vendor["_id"])
 
@@ -928,7 +927,7 @@ def get_product(product_id: str = Path(...), user: dict = Depends(current_user))
     if product is None and ObjectId.is_valid(product_id):
         product = COLS["products"].find_one({"_id": ObjectId(product_id)})
     if product is None:
-        return {"error": "Product not found"}
+        raise HTTPException(status_code=404, detail="Product not found")
     product["_id"] = str(product["_id"])
     return {"product": product}
 
@@ -1046,7 +1045,7 @@ def get_batch(batch_id: str = Path(...), user: dict = Depends(current_user)):
     if batch is None and ObjectId.is_valid(batch_id):
         batch = COLS["batches"].find_one({"_id": ObjectId(batch_id)})
     if batch is None:
-        return {"error": "Batch not found"}
+        raise HTTPException(status_code=404, detail="Batch not found")
     batch["_id"] = str(batch["_id"])
     return {"batch": batch}
 
@@ -2139,8 +2138,11 @@ def create_order(data: dict = Body(...), user: dict = Depends(current_user)):
 # demands to inventory and mark those requests "synchronized".
 @app.post("/vendors/{vendor_id}/inventory/sync")
 def sync_inventory(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    """Apply confirmed product-based requests once, even if calls overlap."""
     require_vendor(user, vendor_id)
-    # Batch requests are closed by /batches/{id}/receive, not by a product sync.
+
+    # Read the candidate requests. Each one is re-checked atomically below,
+    # because another call may be trying to synchronize the same demand.
     demands = list(
         COLS["restock_requests"].find({
             "vendor_id": vendor_id,
@@ -2149,31 +2151,41 @@ def sync_inventory(vendor_id: str = Path(...), user: dict = Depends(current_user
         })
     )
 
-    if not demands:
-        return {
-            "message": "No confirmed demand"
-        }
-
     updated = []
+    synced_count = 0
+
     for demand in demands:
-        for item in demand.get("items", []):
-            pid = item.get("product_id")
-            qty = item.get("quantity", 0)
-            inv = COLS["inventory"].find_one({
+        # Claim the request before changing inventory: only one concurrent
+        # call can move it from "confirmed" to "synchronizing".
+        claim = COLS["restock_requests"].update_one(
+            {
+                "_id": demand["_id"],
                 "vendor_id": vendor_id,
-                "product_id": pid
+                "status": "confirmed",
+                "items.batch_id": {"$exists": False}
+            },
+            {"$set": {"status": "synchronizing"}}
+        )
+        if claim.modified_count != 1:
+            # Another call has already claimed or completed this request.
+            continue
+
+        for item in demand.get("items", []):
+            product_id = item.get("product_id")
+            quantity = item.get("quantity", 0)
+            inventory = COLS["inventory"].find_one({
+                "vendor_id": vendor_id,
+                "product_id": product_id
             })
-            old_qty = float(inv.get("quantity", 0.0)) if inv else 0.0
-            new_qty = old_qty + float(qty)
+            old_quantity = float(inventory.get("quantity", 0.0)) if inventory else 0.0
+            new_quantity = old_quantity + float(quantity)
             COLS["inventory"].update_one(
                 {
                     "vendor_id": vendor_id,
-                    "product_id": pid
+                    "product_id": product_id
                 },
                 {
-                    "$inc": {
-                        "quantity": qty
-                    },
+                    "$inc": {"quantity": quantity},
                     "$set": {
                         "last_updated": datetime.datetime.utcnow().isoformat()
                     },
@@ -2187,27 +2199,26 @@ def sync_inventory(vendor_id: str = Path(...), user: dict = Depends(current_user
                 upsert=True
             )
             updated.append({
-                "product_id": pid,
-                "product_name": (inv.get("product_name") if inv else None) or item.get("product_name", ""),
-                "batch_number": (inv.get("batch_number") if inv else None) or item.get("batch_number", ""),
-                "old_quantity": old_qty,
-                "new_quantity": new_qty
+                "product_id": product_id,
+                "product_name": (inventory.get("product_name") if inventory else None) or item.get("product_name", ""),
+                "batch_number": (inventory.get("batch_number") if inventory else None) or item.get("batch_number", ""),
+                "old_quantity": old_quantity,
+                "new_quantity": new_quantity
             })
 
+        # Mark it complete only after its inventory updates have finished.
         COLS["restock_requests"].update_one(
-            {
-                "_id": demand["_id"]
-            },
-            {
-                "$set": {
-                    "status": "synchronized"
-                }
-            }
+            {"_id": demand["_id"], "status": "synchronizing"},
+            {"$set": {"status": "synchronized"}}
         )
+        synced_count += 1
+
+    if synced_count == 0:
+        return {"message": "No confirmed demand"}
 
     return {
         "message": "Inventory synchronized",
-        "synced_demands": len(demands),
+        "synced_demands": synced_count,
         "updated": updated
     }
 
