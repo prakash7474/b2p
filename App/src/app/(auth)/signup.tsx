@@ -187,7 +187,9 @@ export default function SignUpScreen() {
         </View>
 
         <Text style={styles.locationHint}>
-          Stand at your shop’s location, then capture your live GPS position.
+          {capturing
+            ? "Reading GPS — hold still for a few seconds while accuracy settles."
+            : "Stand at your shop’s location, then capture your live GPS position."}
         </Text>
 
         {location ? (

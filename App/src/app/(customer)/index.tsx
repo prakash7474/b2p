@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { Card, EmptyState, SectionTitle } from "@/src/components/cards";
@@ -9,7 +9,11 @@ import { Screen } from "@/src/components/layout";
 import { AlertBox } from "@/src/components/status";
 import { api } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
-import { useLiveLocation } from "@/src/lib/use-live-location";
+import {
+  useLiveLocation,
+  useLiveTracking,
+  type CapturedLocation,
+} from "@/src/lib/use-live-location";
 import { colors, fonts } from "@/src/theme";
 
 /** Customer home: shops near the customer that have stock, and a quick buy. */
@@ -22,12 +26,48 @@ export default function CustomerHomeScreen() {
   const [qty, setQty] = useState<Record<string, string>>({});
   const [busyKey, setBusyKey] = useState("");
 
+  /** Where the list was last loaded from, so we only reload once the customer moves on. */
+  const lastLoadedRef = useRef<{ latitude: number; longitude: number } | null>(null);
+
+  const loadNearbyFrom = useCallback(
+    async (latitude: number, longitude: number) => {
+      lastLoadedRef.current = { latitude, longitude };
+      await loadNearby(latitude, longitude);
+    },
+    [loadNearby],
+  );
+
+  /** Live high-accuracy fixes keep the nearby list current while the customer moves. */
+  const handleFix = useCallback(
+    (fix: CapturedLocation) => {
+      const last = lastLoadedRef.current;
+      if (last && metresBetween(last, fix) < LIVE_RELOAD_METRES) return;
+      void loadNearbyFrom(fix.latitude, fix.longitude).catch((caught) =>
+        setNotice({ type: "error", text: messageOf(caught) }),
+      );
+    },
+    [loadNearbyFrom],
+  );
+
+  const { position: liveFix, error: trackingError, start } = useLiveTracking({
+    onFix: handleFix,
+  });
+
+  // The customer already shared a location at sign-in, so track live from the start.
+  useEffect(() => {
+    if (customerLocation) void start();
+  }, [customerLocation, start]);
+
   const refresh = async () => {
     try {
       setRefreshing(true);
       setNotice(null);
       const here = customerLocation ?? (await capture());
-      if (here) await loadNearby(here.latitude, here.longitude);
+      if (here) {
+        await loadNearbyFrom(here.latitude, here.longitude);
+        // Location is shared now — keep the list fresh in the background.
+        void start();
+      }
     } catch (caught) {
       setNotice({ type: "error", text: messageOf(caught) });
     } finally {
@@ -75,9 +115,23 @@ export default function CustomerHomeScreen() {
       keyboardShouldPersistTaps="handled"
     >
       {notice ? <AlertBox type={notice.type} message={notice.text} /> : null}
-      {locationError ? <AlertBox type="error" message={locationError} /> : null}
+      {locationError || trackingError ? (
+        <AlertBox type="error" message={locationError || trackingError} />
+      ) : null}
 
       <SectionTitle title="Nearby Shops" subtitle={customerLocation?.address || undefined} />
+
+      {/* Live GPS quality of the fix the list is based on. */}
+      {liveFix ? (
+        <View style={styles.liveRow}>
+          <MaterialCommunityIcons name="crosshairs-gps" size={12} color={colors.primary} />
+          <Text style={styles.liveMeta}>
+            {`Accuracy ± ${liveFix.accuracy !== null ? `${Math.round(liveFix.accuracy)} m` : "unknown"}`}
+            {"  ·  "}
+            {`updated ${new Date(liveFix.capturedAt).toLocaleTimeString()}`}
+          </Text>
+        </View>
+      ) : null}
 
       {nearbyVendors.length === 0 ? (
         <Card>
@@ -150,7 +204,36 @@ export default function CustomerHomeScreen() {
   );
 }
 
+/** Refresh nearby results once the customer has moved at least this far. */
+const LIVE_RELOAD_METRES = 50;
+
+/** Great-circle distance in metres between two fixes. */
+function metresBetween(
+  a: { latitude: number; longitude: number },
+  b: { latitude: number; longitude: number },
+): number {
+  const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+  const dLat = toRadians(b.latitude - a.latitude);
+  const dLon = toRadians(b.longitude - a.longitude);
+  const haversine =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRadians(a.latitude)) * Math.cos(toRadians(b.latitude)) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(haversine));
+}
+
 const styles = StyleSheet.create({
+  liveRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: -2,
+    marginBottom: 10,
+  },
+  liveMeta: {
+    fontSize: 10,
+    color: colors.muted,
+    fontFamily: fonts.regular,
+  },
   card: {
     padding: 15,
     gap: 6,
