@@ -1,8 +1,7 @@
 import os
-import math
+import sys
 import re
 import datetime
-import warnings
 from pathlib import Path as FilePath
 from typing import Optional
 from fastapi import FastAPI, Body, HTTPException, status
@@ -12,9 +11,9 @@ from dotenv import load_dotenv
 from pymongo import MongoClient, ReturnDocument
 from bson import ObjectId
 import bcrypt
-import joblib
-import numpy as np
-import pandas as pd
+
+# `python main.py` runs this file as __main__; alias it so ml's `from main import` reuses it.
+sys.modules.setdefault("main", sys.modules[__name__])
 
 BASE_DIR = FilePath(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -57,37 +56,6 @@ COLS = {
     "inventory_alerts": db["inventory_alerts"],
 }
 
-# ------------------------------------------------------------
-# Machine Learning Models (Demand Forecast & Spoilage Risk)
-# ------------------------------------------------------------
-MODELS_DIR = BASE_DIR / "models"
-warnings.filterwarnings("ignore")
-
-
-def load_model_bundle(filenames):
-    for fname in filenames:
-        model_path = MODELS_DIR / fname
-        if model_path.exists():
-            try:
-                bundle = joblib.load(model_path)
-                print(f"[INFO] Loaded model: {fname}")
-                return bundle
-            except Exception as e:
-                print(f"[WARN] Failed to load {model_path}: {e}")
-    return None
-
-
-demand_bundle = load_model_bundle([
-    "demand_forecast_model (2).pkl",
-    "demand_forecast_model.pkl"
-])
-
-spoilage_bundle = load_model_bundle([
-    "spoilage_risk_model (2).pkl",
-    "spoilage_risk_model.pkl"
-])
-
-
 
 def _normalize_name(text):
     return re.sub(r"[^a-z0-9]", "", str(text).lower())
@@ -109,15 +77,6 @@ def _field(doc, *keys, default=None):
 def _product_key(text):
     # "Idli Batter", "Idly Batter" and the model's "Idly_Batter" are one product
     return _normalize_name(text).replace("idli", "idly")
-
-
-def _model_label(product):
-    """Demand-model class ("Idly_Batter", ...) for a product name/id, or None."""
-    key = _product_key(product)
-    for label in demand_bundle["product_encoder"].classes_:
-        if _product_key(label) == key:
-            return label
-    return None
 
 
 # Batch lifecycle: available (admin exposed) -> assigned (admin approved a
@@ -150,12 +109,33 @@ def _hours_since(value):
 
 
 def _held_batches(vendor):
-    """Batches currently in the vendor's hands with stock left (no archived/sold-out)."""
-    batches = COLS["batches"].find({
+    """Batches currently in the vendor's hands with stock left (no archived/sold-out).
+
+    Each gets an "expired" flag. The first time a batch is seen expired, its kg
+    leaves the vendor's inventory total, since it can no longer be sold.
+    """
+    held = []
+    for batch in COLS["batches"].find({
         "vendor_id": {"$in": _vendor_id_values(vendor)},
         "status": {"$in": HELD_STATUSES},
-    })
-    return [b for b in batches if _batch_remaining(b) > 0]
+    }):
+        if _batch_remaining(batch) <= 0:
+            continue
+        batch["expired"] = _hours_to_expiry(vendor, batch) <= 0
+        if batch["expired"] and not batch.get("expired_at"):
+            # Filter on expired_at/status so a concurrent read or return cannot deduct twice.
+            if COLS["batches"].update_one(
+                {"_id": batch["_id"], "expired_at": {"$exists": False}, "status": {"$in": HELD_STATUSES}},
+                {"$set": {"expired_at": datetime.datetime.utcnow()}}
+            ).modified_count:
+                _adjust_inventory(vendor.get("vendor_id"), batch, -_batch_remaining(batch))
+        held.append(batch)
+    return held
+
+
+def _sellable_batches(vendor):
+    """Received batches with stock left that have not expired: what a customer can buy."""
+    return [b for b in _held_batches(vendor) if b["status"] in SELLABLE_STATUSES and not b["expired"]]
 
 
 def _adjust_inventory(vendor_id, batch, delta):
@@ -299,17 +279,18 @@ def find_nearby_vendors(latitude, longitude, radius_meters=5000, product_id=None
         vendor_ids = _vendor_id_values(vendor)
         if not vendor_ids:
             continue
-        inventory_query = {
-            "vendor_id": {"$in": vendor_ids},
-            "quantity": {"$gt": 0}
-        }
-        if product_id:
-            inventory_query["product_id"] = product_id
-        stock_items = list(COLS["inventory"].find(inventory_query))
+        # Stock comes from fresh batches, not the inventory rows, so expired kg never shows.
+        stock = {}
+        for batch in _sellable_batches(vendor):
+            if product_id and product_id not in (batch.get("product_id"), batch.get("product_name")):
+                continue
+            name = _field(batch, "product_name", "product_id", default="Batter")
+            item = stock.setdefault(_product_key(name), {
+                "product_id": batch.get("product_id") or name, "product_name": name, "quantity": 0.0})
+            item["quantity"] = round(item["quantity"] + _batch_remaining(batch), 2)
+        stock_items = list(stock.values())
         if not stock_items:
             continue
-        for item in stock_items:
-            item["_id"] = str(item["_id"])
         vendor["_id"] = str(vendor["_id"])
         vendor["distance_km"] = round(float(vendor.pop("distance_meters", 0)) / 1000, 2)
         vendor["available_inventory"] = stock_items
@@ -624,6 +605,9 @@ def get_vendor_products(vendor_id: str = Path(...)):
 @app.get("/vendors/{vendor_id}/inventory")
 def get_vendor_inventory(vendor_id: str = Path(...)):
     vid = vendor_id
+    vendor = _find_vendor(vendor_id)
+    if vendor:
+        _held_batches(vendor)  # takes newly expired kg out of the totals before reading them
 
     if ObjectId.is_valid(vendor_id):
         vendor = COLS["vendors"].find_one({
@@ -942,346 +926,11 @@ def list_inventory(vendor_id: str = None, product_id: str = None):
     return {"count": len(items), "inventory": items}
 
 
-def _latest_weather():
-    return COLS["weather_forecast"].find_one(sort=[("forecastFor", -1)]) or {}
-
-
-def _active_festival_type():
-    """festivalType of a festival whose window covers today, else "none"."""
-    today = datetime.datetime.utcnow()
-    for festival in COLS["festival_calendar"].find({
-        "date": {"$lte": today, "$gte": today - datetime.timedelta(days=31)}
-    }):
-        days = int(_field(festival, "windowDays", "window_days", default=1))
-        if festival["date"] + datetime.timedelta(days=days) > today:
-            return _field(festival, "festivalType", "festival_type", default="none")
-    return "none"
-
-
-def _encode(encoder, value, default=0):
-    try:
-        return int(encoder.transform([value])[0])
-    except Exception:
-        return default
-
-
-def _demand_shared_context():
-    now = datetime.datetime.now()
-    hour = now.hour
-    weekday = now.weekday()
-
-    weather = _latest_weather()
-    festival_type = _active_festival_type()
-
-    return {
-        "hourSin": math.sin(2 * math.pi * hour / 24),
-        "hourCos": math.cos(2 * math.pi * hour / 24),
-        "weekdaySin": math.sin(2 * math.pi * weekday / 7),
-        "weekdayCos": math.cos(2 * math.pi * weekday / 7),
-        "isWeekend": 1 if weekday >= 5 else 0,
-        "isFestivalWindow": 0 if festival_type == "none" else 1,
-        "festivalTypeEnc": _encode(demand_bundle["festival_encoder"], festival_type, 1),
-        "forecastTemperatureC": float(_field(weather, "temperatureC", "temperature_c", default=30.0)),
-        "forecastRainProbability": float(_field(weather, "rainProbability", "rain_probability", default=0.1)),
-    }
-
-
 def _find_vendor(vendor_id):
     query = {"vendor_id": vendor_id}
     if ObjectId.is_valid(vendor_id):
         query = {"$or": [{"_id": ObjectId(vendor_id)}, {"vendor_id": vendor_id}]}
     return COLS["vendors"].find_one(query)
-
-
-HISTORY_FEATURES = ["lag1", "lag7", "sameSlot4WeekMean", "rolling7DayMean", "rolling7DayStd", "recentTrend"]
-# Vendors store "commercial"; the model was trained on "commercial_offices".
-LOCALITY_ALIASES = {"commercial": "commercial_offices"}
-
-
-def _batch_chip(batch):
-    return {
-        "batch_id": batch.get("batch_id"),
-        "remaining_kg": round(_batch_remaining(batch), 2),
-        "status": batch.get("status"),
-        "received_at": _field(batch, "received_at", "assigned_at", "created_at"),
-    }
-
-
-def _vendor_forecast(vendor, ctx):
-    """Forecast only the products the vendor actually holds batches of."""
-    by_label, unsupported = {}, set()
-    for batch in _held_batches(vendor):
-        label = _model_label(_field(batch, "product_name", "product_id"))
-        if label:
-            by_label.setdefault(label, []).append(batch)
-        else:
-            unsupported.add(_field(batch, "product_name", "product_id"))
-
-    # Latest DEMAND feature snapshot per product. The ML pipeline writes these in
-    # camelCase with the inputs nested under featureVector.
-    history = {}
-    for snap in COLS["feature_snapshots"].find({
-        "vendorId": {"$in": _vendor_id_values(vendor)},
-        "predictionType": "DEMAND",
-    }).sort("windowEnd", -1):
-        label = _model_label(snap.get("productId"))
-        if label and label not in history:
-            history[label] = snap.get("featureVector") or {}
-
-    locality = _field(vendor, "localityTier", "locality_tier", default="mixed")
-    vendor_features = {
-        "localityTierEnc": _encode(demand_bundle["locality_encoder"], LOCALITY_ALIASES.get(locality, locality),
-                                   _encode(demand_bundle["locality_encoder"], "mixed")),
-        # shortcut: mid-range of training data (3-33) when a vendor has no score
-        "hotspotDensityScore": float(_field(vendor, "hotspotDensityScore", "hotspot_density_score", default=18)),
-    }
-
-    forecasts = []
-    for label, batches in sorted(by_label.items()):
-        snapshot = history.get(label)
-        row = {
-            **ctx,
-            **vendor_features,
-            # No snapshot = no recorded sales yet: cold start with zero history.
-            **{name: float((snapshot or {}).get(name, 0.0)) for name in HISTORY_FEATURES},
-            "productIdEnc": _encode(demand_bundle["product_encoder"], label),
-        }
-        df_input = pd.DataFrame([row])[demand_bundle["features"]]
-        demand = round(float(np.clip(demand_bundle["model"].predict(df_input)[0], 0, None)), 1)
-        safety = round(float(demand_bundle["safety_stock"].get(label, 0.0)), 1)
-        stock = round(sum(_batch_remaining(b) for b in batches), 1)
-
-        deficit = round(max(0.0, demand - stock), 1)
-        refill = round(deficit + safety, 1) if deficit > 0 else 0.0
-
-        forecasts.append({
-            "product_name": _field(batches[0], "product_name", default=label),
-            "model_product": label,
-            "predicted_demand": demand,
-            "safety_stock": safety,
-            "recommended_stock": round(demand + safety, 1),
-            "current_stock": stock,
-            "deficit": deficit,
-            "refill_quantity": refill,
-            "restock_needed": deficit > 0,
-            "status": "Restock Needed" if deficit > 0 else "No Restock Needed",
-            "has_sales_history": snapshot is not None,
-            "batches": [_batch_chip(b) for b in batches],
-        })
-
-    return forecasts, sorted(unsupported)
-
-
-def _forecast_response(vendor, ctx):
-    forecasts, unsupported = _vendor_forecast(vendor, ctx)
-    response = {
-        "vendor_id": vendor.get("vendor_id"),
-        "count": len(forecasts),
-        "forecast": forecasts,
-        "unsupported_products": unsupported,
-    }
-    if unsupported:
-        response["message"] = f"The demand model has no data for: {', '.join(unsupported)}"
-    elif not forecasts:
-        response["message"] = "No batches assigned to this vendor"
-    return response
-
-
-@app.get("/vendors/{vendor_id}/demand-forecast")
-def get_demand_forecast(vendor_id: str = Path(...)):
-    if not demand_bundle:
-        return {"error": "Demand model not loaded"}
-    vendor = _find_vendor(vendor_id)
-    if not vendor:
-        return {"error": "Vendor not found"}
-    return _forecast_response(vendor, _demand_shared_context())
-
-
-@app.get("/demand-forecast")
-def get_all_demand_forecasts(vendor_id: Optional[str] = None):
-    if not demand_bundle:
-        return {"error": "Demand model not loaded"}
-
-    ctx = _demand_shared_context()
-    if vendor_id:
-        vendor = _find_vendor(vendor_id)
-        if not vendor:
-            return {"error": "Vendor not found"}
-        return _forecast_response(vendor, ctx)
-
-    results = []
-    for vendor in COLS["vendors"].find({"vendor_id": {"$exists": True}}):
-        for row in _vendor_forecast(vendor, ctx)[0]:
-            results.append({"vendor_id": vendor["vendor_id"], **row})
-    return {"count": len(results), "forecast": results}
-
-
-def risk_label_for(score):
-    """<=30 Low, 30-70 Medium, >70 High (score is 0-100)."""
-    if score <= 30:
-        return "Low"
-    return "Medium" if score <= 70 else "High"
-
-
-RISK_ACTIONS = {
-    "High": "Urgent: sell first or return",
-    "Medium": "Monitor temperature closely",
-    "Low": "Normal shelf rotation",
-}
-STORAGE_ALIASES = {"refrigerated": "fridge"}
-
-
-def _shelf_life_hours(batch, has_fridge):
-    """Product shelf life for the vendor's storage: fridge vs room temperature."""
-    keys = ("shelf_life_fridge_hrs", "shelf_life_hours") if has_fridge else ("shelf_life_ambient_hrs",)
-    name = _product_key(_field(batch, "product_name", "product_id"))
-    for product in COLS["products"].find():
-        same = product.get("product_id") == batch.get("product_id") or _product_key(product.get("product_name")) == name
-        if same and _field(product, *keys) is not None:
-            return float(_field(product, *keys))
-    # shortcut: catalog has no shelf life for this product; typical idli batter values
-    return 72.0 if has_fridge else 24.0
-
-
-def _spoilage_features(vendor, batch, weather):
-    """Model inputs for one batch, computed the way the training data defined them."""
-    has_fridge = 1 if _field(vendor, "hasRefrigerator", "has_refrigerator", default=True) else 0
-    storage = _field(vendor, "storageType", "storage_type", default="")
-    storage = STORAGE_ALIASES.get(storage, storage)
-    if storage not in spoilage_bundle["storage_encoder"].classes_:
-        storage = "fridge" if has_fridge else "counter"
-
-    ambient = float(_field(batch, "ambient_temperature_c", "ambientTemperatureC",
-                           default=_field(weather, "temperatureC", "temperature_c", default=30.0)))
-    # Training data uses -1 as the fridge temperature of shops without a fridge.
-    fridge = float(_field(batch, "fridge_temperature_c", "fridgeTemperatureC",
-                          default=_field(vendor, "fridgeTemperatureC", "fridge_temperature_c", default=4.0))) if has_fridge else -1.0
-
-    # Stored hour counts were true when the record was written; age them since.
-    elapsed = _hours_since(batch.get("created_at")) or 0.0
-    manufactured = _field(batch, "manufactured_at", "mfgTimestamp")
-    hours_mfg = _hours_since(manufactured) if manufactured else \
-        float(_field(batch, "hours_since_manufacture", "hoursSinceManufacture", default=0)) + elapsed
-    received = batch.get("received_at")
-    hours_shelf = _hours_since(received) if received else \
-        float(_field(batch, "hours_on_shelf", "hoursOnShelf", default=0))
-    expires = batch.get("expires_at")
-    if isinstance(expires, datetime.datetime):  # older batches carry a fixed expiry
-        hours_expiry = (expires - datetime.datetime.utcnow()).total_seconds() / 3600
-    elif _field(batch, "hours_to_expiry", "hoursToExpiry") is not None:
-        hours_expiry = float(_field(batch, "hours_to_expiry", "hoursToExpiry")) - elapsed
-    else:
-        hours_expiry = _shelf_life_hours(batch, has_fridge) - hours_mfg
-
-    volume = _batch_volume(batch)
-    sell_through = _field(batch, "sell_through_rate", "sellThroughRate")
-    if sell_through is None:
-        sell_through = 1 - _batch_remaining(batch) / volume if volume else 0.0
-
-    return {
-        "initialPH": float(_field(batch, "initial_ph", "initialPH", default=4.5)),
-        "hoursSinceManufacture": hours_mfg,
-        "hasRefrigerator": has_fridge,
-        "storageTypeEnc": _encode(spoilage_bundle["storage_encoder"], storage),
-        "ambientTemperatureC": ambient,
-        "humidityPct": float(_field(batch, "humidity_pct", "humidityPct",
-                                    default=_field(weather, "humidityPct", default=65.0))),
-        "fridgeTemperatureC": fridge,
-        "hoursOnShelf": hours_shelf,
-        "sellThroughRate": float(sell_through),
-        "effectiveTemperatureExposure": (fridge if has_fridge else ambient) * hours_mfg,
-        "hoursToExpiry": max(0.0, hours_expiry),
-        "volumeKg": volume,
-        "vendorRating": float(_field(vendor, "rating", "vendor_rating", "vendorRating", default=4.0)),
-    }
-
-
-def _batch_evaluation(vendor, batch, weather):
-    """Stock state of a held batch plus its model spoilage risk (0-100)."""
-    remaining = _batch_remaining(batch)
-    threshold = _batch_threshold(batch)
-    row = {
-        "batch_id": batch.get("batch_id"),
-        "product_name": _field(batch, "product_name", "product_id", default="Batter"),
-        "status": batch.get("status"),
-        "volume_kg": _batch_volume(batch),
-        "remaining_kg": round(remaining, 2),
-        "threshold_kg": threshold,
-        "low_stock": remaining <= threshold,
-        "received_at": batch.get("received_at"),
-        "assigned_at": batch.get("assigned_at"),
-        "expires_at": batch.get("expires_at"),
-    }
-    if not spoilage_bundle:
-        return row
-
-    df_input = pd.DataFrame([_spoilage_features(vendor, batch, weather)])[spoilage_bundle["features"]]
-    probas = spoilage_bundle["model"].predict_proba(df_input)[0]
-    classes = spoilage_bundle["label_encoder"].inverse_transform(spoilage_bundle["model"].classes_)
-    prob = {str(c): float(p) for c, p in zip(classes, probas)}
-    score = round(prob.get("High", 0) * 100 + prob.get("Medium", 0) * 50, 1)
-    label = risk_label_for(score)
-    return {
-        **row,
-        "risk_score": score,
-        "risk_label": label,
-        "probabilities": {k: round(v, 3) for k, v in prob.items()},
-        "action": RISK_ACTIONS[label],
-    }
-
-
-@app.get("/vendors/{vendor_id}/batches")
-def get_vendor_batches(vendor_id: str = Path(...)):
-    vendor = _find_vendor(vendor_id)
-    if not vendor:
-        return {"error": "Vendor not found"}
-    weather = _latest_weather()
-    batches = [_batch_evaluation(vendor, b, weather) for b in _held_batches(vendor)]
-    batches.sort(key=lambda b: b["remaining_kg"] - b["threshold_kg"])
-    return {
-        "vendor_id": vendor.get("vendor_id"),
-        "count": len(batches),
-        "low_stock_count": sum(1 for b in batches if b["low_stock"]),
-        "batches": batches,
-    }
-
-
-@app.get("/vendors/{vendor_id}/spoilage-risk")
-def get_vendor_spoilage_risk(vendor_id: str = Path(...)):
-    if not spoilage_bundle:
-        return {"error": "Spoilage model not loaded"}
-    vendor = _find_vendor(vendor_id)
-    if not vendor:
-        return {"error": "Vendor not found"}
-
-    weather = _latest_weather()
-    evaluations = [_batch_evaluation(vendor, b, weather) for b in _held_batches(vendor)]
-    if not evaluations:
-        return {
-            "vendor_id": vendor.get("vendor_id"),
-            "count": 0,
-            "message": "No batches assigned to this vendor",
-            "aggregate_risk_score": None,
-            "aggregate_risk_label": None,
-            "summary": {"high": 0, "medium": 0, "low": 0},
-            "evaluations": [],
-        }
-
-    evaluations.sort(key=lambda e: -e["risk_score"])
-    # Volume-weighted: a nearly empty risky batch matters less than a full one.
-    total_kg = sum(e["remaining_kg"] for e in evaluations)
-    aggregate = round(sum(e["risk_score"] * e["remaining_kg"] for e in evaluations) / total_kg, 1)
-    return {
-        "vendor_id": vendor.get("vendor_id"),
-        "count": len(evaluations),
-        "aggregate_risk_score": aggregate,
-        "aggregate_risk_label": risk_label_for(aggregate),
-        "summary": {
-            level.lower(): sum(1 for e in evaluations if e["risk_label"] == level)
-            for level in ("High", "Medium", "Low")
-        },
-        "evaluations": evaluations,
-    }
 
 
 @app.post("/vendors/{vendor_id}/demands")
@@ -1476,6 +1125,33 @@ def receive_batch(vendor_id: str = Path(...), batch_id: str = Path(...)):
     return {"message": "Batch assignment confirmed", "batch_id": batch_id, "status": "received"}
 
 
+@app.post("/vendors/{vendor_id}/batches/{batch_id}/return")
+def return_batch(vendor_id: str = Path(...), batch_id: str = Path(...), data: dict = Body(default={})):
+    """Vendor sends back a received batch (expired or too risky to sell); its stock leaves the shop."""
+    vendor = _find_vendor(vendor_id)
+    if not vendor:
+        return {"error": "Vendor not found"}
+    now = datetime.datetime.utcnow()
+    reason = str(data.get("reason") or "returned by vendor")
+    batch = COLS["batches"].find_one_and_update(
+        {"batch_id": batch_id, "vendor_id": {"$in": _vendor_id_values(vendor)}, "status": {"$in": SELLABLE_STATUSES}},
+        {"$set": {"status": "returned", "returned_at": now, "return_reason": reason, "updated_at": now}},
+        return_document=ReturnDocument.BEFORE
+    )
+    if not batch:
+        return {"error": f"Batch {batch_id} is not in this vendor's store"}
+    returned_kg = round(_batch_remaining(batch), 2)
+    if not batch.get("expired_at"):  # expired kg already left the inventory total
+        _adjust_inventory(vendor["vendor_id"], batch, -returned_kg)
+    COLS["logs"].insert_one({
+        "type": "activity", "action": "return_batch", "vendor_id": vendor["vendor_id"],
+        "batch_id": batch_id, "reason": reason, "returned_kg": returned_kg, "timestamp": now,
+        "message": f"Vendor {vendor['vendor_id']} returned batch {batch_id} ({returned_kg} kg): {reason}"
+    })
+    return {"message": f"Batch {batch_id} returned ({returned_kg} kg)", "batch_id": batch_id,
+            "status": "returned", "returned_kg": returned_kg}
+
+
 @app.post("/orders")
 def create_order(data: dict = Body(...)):
     """Customer purchase: deducts kg from a batch (or FEFO across the vendor's batches)."""
@@ -1493,6 +1169,9 @@ def create_order(data: dict = Body(...)):
     if data.get("batch_id"):
         query["batch_id"] = data["batch_id"]
     batches = [b for b in COLS["batches"].find(query) if _batch_remaining(b) > 0]
+    if data.get("batch_id") and batches and _hours_to_expiry(vendor, batches[0]) <= 0:
+        return {"error": f"Batch {data['batch_id']} has expired and cannot be sold"}
+    batches = [b for b in batches if _hours_to_expiry(vendor, b) > 0]
     product = data.get("product_name") or data.get("product_id")
     if product and not data.get("batch_id"):
         batches = [b for b in batches if product in (b.get("product_id"), b.get("product_name"))
@@ -1849,6 +1528,13 @@ def login_customer(data: dict = Body(...)):
             data.get("radius_meters", 5000), data.get("product_id")
         )
     return response
+
+# ml imports shared helpers from this module, so it loads last, once they exist.
+# Also registers the ML routes. Relative when imported as backend.main (the tests do).
+if __package__:
+    from .ml import _hours_to_expiry  # noqa: E402
+else:
+    from ml import _hours_to_expiry  # noqa: E402
 
 if __name__ == "__main__":
     import uvicorn

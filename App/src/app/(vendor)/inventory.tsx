@@ -95,8 +95,9 @@ export default function BatchesScreen() {
   }
 
   const all = batches ?? [];
-  // Assigned batches count as stock only after the vendor confirms receipt.
-  const inStore = all.filter((batch) => batch.status !== "assigned");
+  // Assigned batches count as stock only after the vendor confirms receipt; expired ones never do.
+  const inStore = all.filter((batch) => batch.status !== "assigned" && !batch.expired);
+  const expired = all.filter((batch) => batch.expired);
   const low = inStore.filter((batch) => batch.low_stock);
   const refresh = () => {
     setRefreshing(true);
@@ -121,6 +122,14 @@ export default function BatchesScreen() {
       keyboardShouldPersistTaps="handled"
     >
       {notice ? <AlertBox type={notice.type} message={notice.text} /> : null}
+
+      {expired.map((batch) => (
+        <AlertBox
+          key={`expired-${batch.batch_id}`}
+          type="error"
+          message={`Batch ${batch.batch_id} (${batch.product_name}) has expired: ${batch.remaining_kg} kg can no longer be sold. Return it.`}
+        />
+      ))}
 
       {low.map((batch) => (
         <AlertBox

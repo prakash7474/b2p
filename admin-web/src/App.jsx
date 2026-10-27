@@ -22,7 +22,6 @@ import {
   EyeOff,
   Boxes,
   CalendarDays,
-  Bell,
   LogOut
 } from "lucide-react";
 
@@ -161,9 +160,7 @@ function Sidebar({ page, setPage, open, setOpen, demands }) {
     {
       title: "Operations",
       links: [
-        ["demands", "Batch Requests", FileText],
-        ["orders", "Orders", ShoppingCart],
-        ["alerts", "Stock Alerts", Bell]
+        ["demands", "Batch Requests", FileText]
       ]
     },
     {
@@ -1585,110 +1582,6 @@ function useList(url, key) {
   return { items, reload: () => setVersion((v) => v + 1), message, setMessage };
 }
 
-function Orders({ search, setSearch }) {
-  const { items: orders, message } = useList("/orders", "orders");
-  const filtered = orders.filter((order) => JSON.stringify(order).toLowerCase().includes(search.toLowerCase()));
-
-  return (
-    <PageLayout title="Orders" subtitle="Customer purchases and recorded shop sales" search={search} setSearch={setSearch}>
-      {message && (
-        <div className="alert alert-warning">
-          <AlertTriangle size={16} />
-          {message}
-        </div>
-      )}
-      <div className="table-card">
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Order</th>
-                <th>Date</th>
-                <th>Vendor</th>
-                <th>Product</th>
-                <th>Quantity</th>
-                <th>Customer</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((order, index) => {
-                const status = getValue(order, ["order_status", "status"], "-");
-                return (
-                  <tr key={order._id || index}>
-                    <td><strong>{getValue(order, ["order_id", "_id"], "-")}</strong></td>
-                    <td>{formatDate(getValue(order, ["order_date", "created_at"], ""))}</td>
-                    <td>{order.vendor_id || "-"}</td>
-                    <td>{getValue(order, ["product_name"], order.order_type === "restock" ? "Restock request" : "-")}</td>
-                    <td>{order.quantity_kg !== undefined ? `${order.quantity_kg} kg` : "-"}</td>
-                    <td>{order.user_id || "-"}</td>
-                    <td><span className={statusClass(status)}>{formatStatus(status)}</span></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {filtered.length === 0 && <div className="empty-state">No orders found.</div>}
-        </div>
-      </div>
-    </PageLayout>
-  );
-}
-
-function Alerts({ search, setSearch }) {
-  const { items: alerts, message } = useList("/inventory-alerts", "alerts");
-  const filtered = alerts.filter((alert) => JSON.stringify(alert).toLowerCase().includes(search.toLowerCase()));
-
-  return (
-    <PageLayout
-      title="Stock Alerts"
-      subtitle="Raised when a sale takes a batch below its low-stock level. Each clears itself once the shop receives a new batch of that product (assign one from Batch Requests) or returns the batch."
-      search={search}
-      setSearch={setSearch}
-    >
-      {message && (
-        <div className="alert alert-warning">
-          <AlertTriangle size={16} />
-          {message}
-        </div>
-      )}
-      <div className="table-card">
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Raised</th>
-                <th>Vendor</th>
-                <th>Batch</th>
-                <th>Message</th>
-                <th>Status</th>
-                <th>Cleared by</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((alert, index) => (
-                <tr key={alert._id || index}>
-                  <td>{formatDate(alert.generated_time)}</td>
-                  <td>{alert.vendor_id || "-"}</td>
-                  <td>{alert.batch_id || "-"}</td>
-                  <td>{alert.alert_message || formatStatus(alert.alert_type)}</td>
-                  <td>
-                    <span className={alert.alert_status === "active" ? "status status-danger" : statusClass(alert.alert_status)}>
-                      {formatStatus(alert.alert_status)}
-                    </span>
-                  </td>
-                  <td>{alert.alert_status === "active" ? "Waiting for new stock" : alert.resolved_by || "-"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {filtered.length === 0 && <div className="empty-state">No stock alerts.</div>}
-        </div>
-      </div>
-    </PageLayout>
-  );
-}
-
 function Festivals({ search, setSearch }) {
   const { items: festivals, reload, message, setMessage } = useList("/festival-calendar", "festivals");
   const empty = { date: "", festivalType: "publicHoliday", windowDays: "1", festivalName: "", region: "Tamil Nadu" };
@@ -1896,8 +1789,6 @@ function App() {
       products: "Products",
       inventory: "Inventory",
       demands: "Batch Requests",
-      orders: "Orders",
-      alerts: "Stock Alerts",
       forecast: "Demand Forecast",
       spoilage: "Spoilage Risk",
       festivals: "Festival Calendar",
@@ -1979,10 +1870,6 @@ function App() {
           {page === "products" && (
             <Products products={products} search={search} setSearch={setSearch} />
           )}
-
-          {page === "orders" && <Orders search={search} setSearch={setSearch} />}
-
-          {page === "alerts" && <Alerts search={search} setSearch={setSearch} />}
 
           {page === "festivals" && <Festivals search={search} setSearch={setSearch} />}
 

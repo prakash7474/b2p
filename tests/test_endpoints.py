@@ -66,10 +66,11 @@ def db():
 @pytest.fixture(scope="session", autouse=True)
 def _redirect_to_test_db(db):
     """Point every endpoint at b2p_test instead of the production b2p."""
-    original_cols = main.COLS
-    main.COLS = {name: db[name] for name in original_cols}
+    # Swap in place: backend/ml.py shares this same dict, so its routes move too.
+    original_cols = dict(main.COLS)
+    main.COLS.update({name: db[name] for name in original_cols})
     yield
-    main.COLS = original_cols
+    main.COLS.update(original_cols)
 
 
 @pytest.fixture(autouse=True)

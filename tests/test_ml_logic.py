@@ -1,5 +1,5 @@
 """
-Offline checks for the ML glue in backend/main.py (no MongoDB needed):
+Offline checks for the ML glue in backend/ml.py (no MongoDB needed):
 history features match the training CSV, sales are bucketed into the
 model's morning/evening slots, and expired batches are detected.
 
@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import backend.main as main
+import backend.ml as ml  # loaded by main; holds the ML helpers
 
 
 class FakeCollection:
@@ -38,13 +39,13 @@ def test_history_features_match_training_csv():
     sales = list(rows.unitsSoldNextWindow)
     for i in (56, 80, 150, len(rows) - 1):
         expected = rows.iloc[i]
-        got = main._history_features(sales[:i])
-        for name in main.HISTORY_FEATURES:
+        got = ml._history_features(sales[:i])
+        for name in ml.HISTORY_FEATURES:
             assert got[name] == pytest.approx(expected[name], rel=1e-6), (i, name)
 
 
 def test_history_features_with_one_slot_of_history():
-    got = main._history_features([3.0])
+    got = ml._history_features([3.0])
     assert got == {"lag1": 3.0, "lag7": 0.0, "sameSlot4WeekMean": 0.0,
                    "rolling7DayMean": 3.0, "rolling7DayStd": 0.0, "recentTrend": 1.0}
 
@@ -63,7 +64,7 @@ def test_sales_series_buckets_slots_and_stops_before_current(monkeypatch):
     monkeypatch.setitem(main.COLS, "inventory_movement", FakeCollection(moves))
     monkeypatch.setitem(main.COLS, "products", FakeCollection([{"product_id": "P1", "product_name": "Idli Batter"}]))
 
-    series = main._sales_series({"vendor_id": "V1"}, (day + datetime.timedelta(days=2), 0))
+    series = ml._sales_series({"vendor_id": "V1"}, (day + datetime.timedelta(days=2), 0))
 
     # day0 morning, day0 evening, day1 morning (no sales), day1 evening
     assert series == {"Idly_Batter": [5.0, 1.0, 0.0, 4.0]}
@@ -74,5 +75,5 @@ def test_expiry_depends_on_fridge(monkeypatch):
     batch = {"product_name": "Idli Batter",
              "manufactured_at": datetime.datetime.utcnow() - datetime.timedelta(hours=30)}
 
-    assert main._hours_to_expiry({"hasRefrigerator": False}, batch) <= 0
-    assert main._hours_to_expiry({"hasRefrigerator": True}, batch) == pytest.approx(42, abs=0.1)
+    assert ml._hours_to_expiry({"hasRefrigerator": False}, batch) <= 0
+    assert ml._hours_to_expiry({"hasRefrigerator": True}, batch) == pytest.approx(42, abs=0.1)

@@ -68,8 +68,8 @@ export default function DashboardScreen() {
 
   const batches = report?.evaluations ?? [];
   const toConfirm = batches.filter((batch) => batch.status === "assigned");
-  // Assigned batches count as stock only after the vendor confirms receipt.
-  const inStore = batches.filter((batch) => batch.status !== "assigned");
+  // Assigned batches count as stock only after the vendor confirms receipt; expired ones never do.
+  const inStore = batches.filter((batch) => batch.status !== "assigned" && !batch.expired);
   const currentStock = inStore.reduce((sum, batch) => sum + Number(batch.remaining_kg ?? 0), 0);
   const lowStock = inStore.filter((batch) => batch.low_stock).length;
   const aggregate = report?.aggregateScore;
