@@ -68,8 +68,10 @@ export default function DashboardScreen() {
 
   const batches = report?.evaluations ?? [];
   const toConfirm = batches.filter((batch) => batch.status === "assigned");
-  const currentStock = batches.reduce((sum, batch) => sum + Number(batch.remaining_kg ?? 0), 0);
-  const lowStock = batches.filter((batch) => batch.low_stock).length;
+  // Assigned batches count as stock only after the vendor confirms receipt.
+  const inStore = batches.filter((batch) => batch.status !== "assigned");
+  const currentStock = inStore.reduce((sum, batch) => sum + Number(batch.remaining_kg ?? 0), 0);
+  const lowStock = inStore.filter((batch) => batch.low_stock).length;
   const aggregate = report?.aggregateScore;
   const aggregateLabel = report?.aggregateLabel;
 
@@ -103,7 +105,7 @@ export default function DashboardScreen() {
           icon={(color) => <MaterialCommunityIcons name="scale" size={18} color={color} />}
           label="Current Stock"
           value={currentStock.toFixed(1)}
-          sub={`kg in ${batches.length} batches`}
+          sub={`kg in ${inStore.length} batches`}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="shield-alert-outline" size={18} color={color} />}

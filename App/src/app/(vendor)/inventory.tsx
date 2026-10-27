@@ -95,7 +95,9 @@ export default function BatchesScreen() {
   }
 
   const all = batches ?? [];
-  const low = all.filter((batch) => batch.low_stock);
+  // Assigned batches count as stock only after the vendor confirms receipt.
+  const inStore = all.filter((batch) => batch.status !== "assigned");
+  const low = inStore.filter((batch) => batch.low_stock);
   const refresh = () => {
     setRefreshing(true);
     void load();
@@ -132,8 +134,8 @@ export default function BatchesScreen() {
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="package-variant" size={18} color={color} />}
           label="Batches Held"
-          value={all.length}
-          sub={`${all.reduce((sum, b) => sum + Number(b.remaining_kg ?? 0), 0).toFixed(1)} kg`}
+          value={inStore.length}
+          sub={`${inStore.reduce((sum, b) => sum + Number(b.remaining_kg ?? 0), 0).toFixed(1)} kg`}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="alert-decagram-outline" size={18} color={color} />}

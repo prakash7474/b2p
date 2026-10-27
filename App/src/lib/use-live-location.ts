@@ -159,7 +159,7 @@ export function useLiveTracking(options: TrackingOptions = {}) {
   }, [distanceFilter, timeInterval]);
 
   const stop = useCallback(() => {
-    subscriptionRef.current?.remove();
+    stopWatch(subscriptionRef.current);
     subscriptionRef.current = null;
     setTracking(false);
   }, []);
@@ -167,7 +167,7 @@ export function useLiveTracking(options: TrackingOptions = {}) {
   // Drop the subscription on unmount so the watcher never leaks.
   useEffect(() => {
     return () => {
-      subscriptionRef.current?.remove();
+      stopWatch(subscriptionRef.current);
       subscriptionRef.current = null;
     };
   }, []);
@@ -196,7 +196,7 @@ function captureBestFix(onFix?: (fix: CapturedLocation) => void): Promise<Captur
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      subscription?.remove();
+      stopWatch(subscription);
       subscription = null;
       resolve(best);
     };
@@ -225,7 +225,7 @@ function captureBestFix(onFix?: (fix: CapturedLocation) => void): Promise<Captur
       .then((watch) => {
         // The window may already be closed by the time the watcher starts.
         if (settled) {
-          watch.remove();
+          stopWatch(watch);
           return;
         }
         subscription = watch;
@@ -287,5 +287,18 @@ export async function reverseGeocode(
       .join(", ");
   } catch {
     return "";
+  }
+}
+
+/**
+ * expo-location 19.0.x on web stops the browser watch, then throws calling
+ * LocationEventEmitter.removeSubscription (missing on web) — the watch is already
+ * cleared, so the throw is safe to swallow.
+ */
+function stopWatch(subscription: Location.LocationSubscription | null) {
+  try {
+    subscription?.remove();
+  } catch {
+    // shortcut: drop once expo-location fixes removeSubscription on web (SDK upgrade).
   }
 }

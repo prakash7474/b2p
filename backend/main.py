@@ -85,11 +85,6 @@ warnings.filterwarnings("ignore")
 
 
 def load_model_bundle(filenames):
-    """Load the first joblib bundle found among ``filenames`` in MODELS_DIR.
-
-    Returns None (endpoint handlers then degrade gracefully) when no
-    model file can be loaded.
-    """
     for fname in filenames:
         model_path = MODELS_DIR / fname
         if model_path.exists():
@@ -942,8 +937,12 @@ def create_batch(data: dict = Body(...), user: dict = Depends(current_user)):
     product_id = data.get("product_id")
     if not product_id:
         return {"error": "product_id is required"}
-    if vendor_id and not _find_vendor(vendor_id):
-        return {"error": f"Vendor {vendor_id} not found"}
+    if vendor_id:
+        vendor = _find_vendor(vendor_id)
+        if not vendor:
+            return {"error": f"Vendor {vendor_id} not found"}
+        if _vendor_status(vendor) not in APPROVED_STATUSES:
+            return {"error": f"Vendor {vendor_id} is not approved yet; approve the shop before assigning batches"}
     product = COLS["products"].find_one({"product_id": product_id})
     if not product:
         return {"error": f"Product {product_id} not found. Create the product first."}
@@ -981,7 +980,9 @@ def create_batch(data: dict = Body(...), user: dict = Depends(current_user)):
         "manufactured_at": manufactured_at,
         "exposed": bool(data.get("exposed", True)),
         "initial_ph": initial_ph,
-        "status": data.get("status", "active" if vendor_id else "available"),
+        # A vendor's batch waits for their receipt (POST .../receive) before it counts as stock.
+        "status": data.get("status", "assigned" if vendor_id else "available"),
+        **({"assigned_at": now} if vendor_id else {}),
         "created_at": now
     }
     result = COLS["batches"].insert_one(batch_doc)
@@ -1736,7 +1737,7 @@ def get_vendor_batches(vendor_id: str = Path(...), user: dict = Depends(current_
     return {
         "vendor_id": vendor.get("vendor_id"),
         "count": len(batches),
-        "low_stock_count": sum(1 for b in batches if b["low_stock"]),
+        "low_stock_count": sum(1 for b in batches if b["low_stock"] and b["status"] in SELLABLE_STATUSES),
         "batches": batches,
     }
 
@@ -1765,16 +1766,18 @@ def get_vendor_spoilage_risk(vendor_id: str = Path(...), user: dict = Depends(cu
         }
 
     evaluations.sort(key=lambda e: -e["risk_score"])
+    # Assigned batches are still listed (to confirm) but are not in the shop until received.
+    in_store = [e for e in evaluations if e["status"] in SELLABLE_STATUSES]
     # Volume-weighted: a nearly empty risky batch matters less than a full one.
-    total_kg = sum(e["remaining_kg"] for e in evaluations)
-    aggregate = round(sum(e["risk_score"] * e["remaining_kg"] for e in evaluations) / total_kg, 1)
+    total_kg = sum(e["remaining_kg"] for e in in_store)
+    aggregate = round(sum(e["risk_score"] * e["remaining_kg"] for e in in_store) / total_kg, 1) if total_kg else None
     return {
         "vendor_id": vendor.get("vendor_id"),
         "count": len(evaluations),
         "aggregate_risk_score": aggregate,
-        "aggregate_risk_label": risk_label_for(aggregate),
+        "aggregate_risk_label": risk_label_for(aggregate) if aggregate is not None else None,
         "summary": {
-            level.lower(): sum(1 for e in evaluations if e["risk_label"] == level)
+            level.lower(): sum(1 for e in in_store if e["risk_label"] == level)
             for level in ("High", "Medium", "Low")
         },
         "evaluations": evaluations,
@@ -1883,6 +1886,9 @@ def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...), user:
     if batch_ids:
         if demand.get("status") != "pending":
             return {"error": "Only pending requests can be assigned"}
+        vendor = _find_vendor(vendor_id)
+        if not vendor or _vendor_status(vendor) not in APPROVED_STATUSES:
+            return {"error": f"Vendor {vendor_id} is not approved yet; approve the shop before assigning batches"}
         for batch_id in batch_ids:
             batch = COLS["batches"].find_one_and_update(
                 {"batch_id": batch_id, "status": "available"},
@@ -1893,7 +1899,6 @@ def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...), user:
             )
             if not batch:
                 return {"error": f"Batch {batch_id} is no longer available"}
-            _adjust_inventory(vendor_id, batch, _batch_remaining(batch))
         # Other vendors' requests for the same batch can no longer be met.
         COLS["restock_requests"].update_many(
             {"_id": {"$ne": demand["_id"]}, "status": "pending", "items.batch_id": {"$in": batch_ids}},
@@ -1952,6 +1957,7 @@ def receive_batch(vendor_id: str = Path(...), batch_id: str = Path(...), user: d
     )
     if not batch:
         return {"error": f"Batch {batch_id} is not awaiting delivery for this vendor"}
+    _adjust_inventory(vendor["vendor_id"], batch, _batch_remaining(batch))
     COLS["restock_requests"].update_many(
         {"vendor_id": {"$in": _vendor_id_values(vendor)}, "status": "confirmed", "items.batch_id": batch_id},
         {"$set": {"status": "synchronized", "received_at": now}}
@@ -1992,8 +1998,9 @@ def return_batch(vendor_id: str = Path(...), batch_id: str = Path(...), data: di
         "returned_at": now, "updated_at": now,
     }}).matched_count == 0:
         return {"error": f"Batch {batch_id} changed meanwhile, please retry"}
-    # Assignment already added this batch to the inventory row, so take it back out.
-    _adjust_inventory(vendor["vendor_id"], batch, -kg)
+    # Only received stock was added to the inventory row, so only that comes back out.
+    if batch.get("status") in SELLABLE_STATUSES:
+        _adjust_inventory(vendor["vendor_id"], batch, -kg)
     COLS["inventory_movement"].insert_one({
         "vendorId": vendor["vendor_id"], "productId": _field(batch, "product_id", "product_name"),
         "batchId": batch_id, "movementType": "return", "quantity": round(kg, 3), "occurredAt": now,
