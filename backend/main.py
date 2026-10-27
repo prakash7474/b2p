@@ -109,9 +109,6 @@ def _field(doc, *keys, default=None):
 def _product_key(text):
     # "Idli Batter", "Idly Batter" and the model's "Idly_Batter" are one product
     return _normalize_name(text).replace("idli", "idly")
-Manufactured at
-￼
-16/10/2026, 13:49
 
 
 def _model_label(product):
