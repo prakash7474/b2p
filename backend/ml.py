@@ -5,7 +5,7 @@ import statistics
 import datetime
 import warnings
 from typing import Optional
-from fastapi import Path
+from fastapi import Body, Path
 import joblib
 import numpy as np
 import pandas as pd
@@ -406,6 +406,42 @@ def get_all_demand_forecasts(vendor_id: Optional[str] = None):
         for row in _vendor_forecast(vendor, ctx)[0]:
             results.append({"vendor_id": vendor["vendor_id"], **row})
     return {"count": len(results), "forecast": results}
+
+
+# POST /festival-calendar — admin adds (or corrects) a festival window that the
+# demand model's isFestivalWindow / festivalTypeEnc features read.
+# Body: {"date": "2027-01-15", "festivalType": "harvestFestival", "windowDays": 4, "festivalName": "Pongal", "region": "Tamil Nadu"}
+@app.post("/festival-calendar")
+def add_festival(data: dict = Body(...)):
+    if not demand_bundle:
+        return {"error": "Demand model not loaded"}
+    known = [str(c) for c in demand_bundle["festival_encoder"].classes_ if c != "none"]
+    festival_type = _field(data, "festivalType", "festival_type")
+    if festival_type not in known:
+        return {"error": f"festivalType must be one of: {', '.join(known)} (the types the model was trained on)"}
+    try:
+        day = datetime.date.fromisoformat(str(data.get("date", "")))
+        window_days = int(_field(data, "windowDays", "window_days", default=1))
+    except (TypeError, ValueError):
+        return {"error": "date must be YYYY-MM-DD and windowDays a whole number"}
+    if not 1 <= window_days <= 31:  # _active_festival_type looks back 31 days
+        return {"error": "windowDays must be between 1 and 31"}
+    # Local midnight in UTC, matching how the rest of the backend stores times.
+    start = datetime.datetime.combine(day, datetime.time()).astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    doc = {"date": start, "festivalType": festival_type, "windowDays": window_days,
+           "festivalName": _field(data, "festivalName", "name", default=""),
+           "region": data.get("region", "Tamil Nadu"), "updated_at": datetime.datetime.utcnow()}
+    COLS["festival_calendar"].update_one({"date": start, "festivalType": festival_type}, {"$set": doc}, upsert=True)
+    return {"message": "Festival saved", "festival": doc}
+
+
+# GET /festival-calendar — every stored festival window, soonest first.
+@app.get("/festival-calendar")
+def list_festivals():
+    festivals = list(COLS["festival_calendar"].find().sort("date", 1))
+    for festival in festivals:
+        festival["_id"] = str(festival["_id"])
+    return {"count": len(festivals), "festivals": festivals}
 
 
 def risk_label_for(score):
