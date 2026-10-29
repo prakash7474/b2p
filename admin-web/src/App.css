@@ -4,6 +4,7 @@
   /* Same look as the shop app: forest green, butter yellow, outlined controls, no shadows. */
   --accent: #f9e9a9;
   --accent-dark: #f3dc85;
+  --teal: #56dddb;
   --primary: #035542;
   --primary-dark: #023b2e;
   --primary-light: #f9e9a9;
@@ -206,8 +207,9 @@ button:disabled {
 .topbar {
   height: 72px;
   padding: 0 32px;
-  background: white;
-  border-bottom: 2px solid var(--outline);
+  /* A lighter shade of the brand green, so the bar reads as part of the frame. */
+  background: #dcefe7;
+  border-bottom: 2px solid #b9dccd;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -233,28 +235,59 @@ button:disabled {
 }
 
 .topbar-brand {
-  font-size: 16px;
-  font-weight: 500;
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 22px;
+  line-height: 1.1;
+  text-transform: uppercase;
+  color: var(--primary);
 }
 
 .topbar-subtitle {
-  color: var(--muted);
+  color: var(--primary);
   font-size: 12px;
-  letter-spacing: .05em;
-  margin-top: 2px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 13px;
+  gap: 10px;
+  font-size: 14px;
 }
 
-.topbar-right strong {
-  color: var(--text);
-  margin-left: 12px;
+.topbar-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 9999px;
+  background: white;
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.topbar-pill .online-dot {
+  background: #2fb36b;
+}
+
+.signout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border: 2px solid var(--primary);
+  border-radius: 9999px;
+  background: var(--primary);
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.signout-btn:hover {
+  background: var(--primary-dark);
 }
 
 .content {
@@ -311,6 +344,10 @@ button:disabled {
 }
 
 /* The dashboard's refresh button sits on the green band. */
+.billboard-alt {
+  color: var(--teal);
+}
+
 .dashboard-header .refresh-btn {
   border-color: white;
   color: white;
@@ -1291,7 +1328,8 @@ tbody tr:last-child td {
     padding: 0 18px;
   }
 
-  .topbar-right {
+  /* Keep Sign out reachable on phones; only the status pill goes. */
+  .topbar-pill {
     display: none;
   }
 

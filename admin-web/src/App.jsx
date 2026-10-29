@@ -308,22 +308,23 @@ function Topbar({ title, setOpen, onSignOut }) {
   return (
     <header className="topbar">
       <div className="topbar-left">
-        <button className="menu-btn" onClick={() => setOpen(true)}>
+        <button className="menu-btn" onClick={() => setOpen(true)} aria-label="Open menu">
           <Menu size={20} />
         </button>
 
         <div>
-          <div className="topbar-brand">B2POnline</div>
-          <div className="topbar-subtitle">MANUFACTURER PORTAL</div>
+          <div className="topbar-subtitle">Manufacturer portal</div>
+          <div className="topbar-brand">{title}</div>
         </div>
       </div>
 
       <div className="topbar-right">
-        <span className="online-dot" />
-        <span>System Online</span>
-        <strong>{title}</strong>
-        <button className="secondary-btn small-btn" onClick={onSignOut}>
-          <LogOut size={13} />
+        <span className="topbar-pill">
+          <span className="online-dot" />
+          System online
+        </span>
+        <button className="signout-btn" onClick={onSignOut}>
+          <LogOut size={14} />
           Sign out
         </button>
       </div>
@@ -383,12 +384,23 @@ function Dashboard({ vendors, demands, logs, setPage, openInventory, refresh }) 
   return (
     <div>
       <div className="dashboard-header">
+        {/* The headline is today's job: how much batter to make for this sales window. */}
         <div>
-          <h1>Dashboard</h1>
+          <h1>
+            {ready ? (
+              <>
+                Make <span className="billboard-alt">{kg(Math.round(summary.demand.to_make_kg))}</span>
+              </>
+            ) : (
+              "Today"
+            )}
+          </h1>
           <p>
             {ready
-              ? `${formatStatus(summary.window.label)} sales window, ${parseServerDate(summary.window.date).toLocaleDateString()}`
-              : "A compact view of your manufacturing operations"}
+              ? `for the ${summary.window.label} window, ${parseServerDate(summary.window.date).toLocaleDateString(undefined, {
+                  weekday: "long", day: "numeric", month: "short"
+                })}: ${kg(summary.demand.total_kg)} demand across ${summary.demand.shops_forecast} shops, plus safety stock, minus stock on hand`
+              : "Loading today's numbers..."}
           </p>
         </div>
 
@@ -422,9 +434,9 @@ function Dashboard({ vendors, demands, logs, setPage, openInventory, refresh }) 
       <div className="dashboard-stats">
         <DashCard
           icon={TrendingUp}
-          title={ready ? `Make for the ${summary.window.label}` : "Make today"}
-          value={ready ? kg(summary.demand.to_make_kg) : "..."}
-          text={ready ? `${kg(summary.demand.total_kg)} demand + safety stock, minus stock on hand` : ""}
+          title="Demand by product"
+          value={ready ? kg(summary.demand.total_kg) : "..."}
+          text={ready ? `expected across all shops this ${summary.window.label}` : ""}
           action={{ label: "Open forecast", onClick: () => setPage("forecast") }}
         >
           {ready && (
