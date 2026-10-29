@@ -1,10 +1,11 @@
 import {
-  Inter_400Regular,
-  Inter_500Medium,
-  Inter_600SemiBold,
-  Inter_700Bold,
+  WorkSans_400Regular,
+  WorkSans_500Medium,
+  WorkSans_600SemiBold,
+  WorkSans_700Bold,
+  WorkSans_900Black,
   useFonts,
-} from "@expo-google-fonts/inter";
+} from "@expo-google-fonts/work-sans";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
@@ -18,10 +19,11 @@ void SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
-    Inter_400Regular,
-    Inter_500Medium,
-    Inter_600SemiBold,
-    Inter_700Bold,
+    WorkSans_400Regular,
+    WorkSans_500Medium,
+    WorkSans_600SemiBold,
+    WorkSans_700Bold,
+    WorkSans_900Black,
   });
 
   useEffect(() => {
@@ -36,7 +38,8 @@ export default function RootLayout() {
 
   return (
     <AuthProvider>
-      <StatusBar style="dark" />
+      {/* Every screen opens on the forest-green header. */}
+      <StatusBar style="light" />
       <Stack
         screenOptions={{
           headerShown: false,

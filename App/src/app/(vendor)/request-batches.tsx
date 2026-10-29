@@ -143,7 +143,7 @@ export default function RequestBatchesScreen() {
                     compact
                     disabled={requested}
                     loading={busyId === id}
-                    icon={<MaterialCommunityIcons name="send-outline" size={13} color="#fff" />}
+                    icon={<MaterialCommunityIcons name="send-outline" size={18} color={colors.primary} />}
                     onPress={() => void run(id, () => api.requestBatch(vendorId, id))}
                   />
                 </View>
@@ -194,7 +194,7 @@ export default function RequestBatchesScreen() {
                       label="Confirm"
                       compact
                       loading={busyId === batchId}
-                      icon={<MaterialCommunityIcons name="check-circle-outline" size={13} color="#fff" />}
+                      icon={<MaterialCommunityIcons name="check-circle-outline" size={18} color={colors.primary} />}
                       onPress={() => void run(batchId, () => api.receiveBatch(vendorId, batchId))}
                     />
                   ) : null}
@@ -216,7 +216,7 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   rowLast: {
     borderBottomWidth: 0,
@@ -232,13 +232,13 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
   },
   rowTitle: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "700",
     fontFamily: fonts.bold,
     color: colors.text,
   },
   rowMeta: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },

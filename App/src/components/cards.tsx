@@ -1,9 +1,9 @@
 import { type ReactNode } from "react";
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 
-import { colors, fonts, radius, shadow, textStyles } from "@/src/theme";
+import { colors, fonts, radius, textStyles } from "@/src/theme";
 
-/** White bordered card used across the admin dashboard. */
+/** White card with the 2px forest outline. */
 export function Card({
   children,
   style,
@@ -14,7 +14,7 @@ export function Card({
   return <View style={[styles.card, style]}>{children}</View>;
 }
 
-/** Small uppercase section title + caption, like the admin sections. */
+/** Heavy uppercase section title + caption. */
 export function SectionTitle({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <View style={styles.section}>
@@ -43,7 +43,7 @@ export function StatCard({
   tone?: "primary" | "danger" | "warning" | "success";
 }) {
   const toneStyle = {
-    primary: { bg: colors.primaryLight, fg: colors.primary },
+    primary: { bg: colors.butter, fg: colors.primary },
     danger: { bg: colors.dangerBg, fg: colors.danger },
     warning: { bg: colors.warningBg, fg: colors.warning },
     success: { bg: colors.successBg, fg: colors.success },
@@ -105,10 +105,9 @@ export function EmptyState({
 const styles = StyleSheet.create({
   card: {
     backgroundColor: colors.surface,
-    borderWidth: 1,
+    borderWidth: 2,
     borderColor: colors.border,
     borderRadius: radius.card,
-    ...shadow,
     overflow: "hidden",
   },
   section: {
@@ -116,7 +115,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   sectionCaption: {
-    fontSize: 11,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
@@ -129,15 +128,14 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     flexBasis: "45%",
     backgroundColor: colors.surface,
-    borderWidth: 1,
+    borderWidth: 2,
     borderColor: colors.border,
     borderRadius: radius.card,
     padding: 16,
-    ...shadow,
   },
   statIcon: {
-    width: 38,
-    height: 38,
+    width: 40,
+    height: 40,
     borderRadius: radius.chip,
     alignItems: "center",
     justifyContent: "center",
@@ -145,8 +143,10 @@ const styles = StyleSheet.create({
   statLabel: {
     marginTop: 12,
     fontSize: 12,
-    color: colors.muted,
-    fontFamily: fonts.regular,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+    color: colors.primary,
+    fontFamily: fonts.medium,
   },
   statValueRow: {
     flexDirection: "row",
@@ -156,13 +156,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   statValue: {
-    fontSize: 24,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
+    fontSize: 30,
+    fontFamily: fonts.black,
     color: colors.text,
   },
   statSub: {
-    fontSize: 11,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
@@ -171,24 +170,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 14,
-    paddingVertical: 12,
+    paddingVertical: 14,
     paddingHorizontal: 16,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
   },
   infoRowLast: {
     borderBottomWidth: 0,
   },
   infoLabel: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
     flexShrink: 1,
   },
   infoValue: {
-    fontSize: 12,
-    fontWeight: "600",
-    fontFamily: fonts.semibold,
+    fontSize: 15,
+    fontFamily: fonts.medium,
     color: colors.text,
     textAlign: "right",
     flexShrink: 1,
@@ -201,14 +199,14 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   emptyTitle: {
-    fontSize: 14,
-    fontWeight: "600",
-    fontFamily: fonts.semibold,
-    color: colors.text,
+    fontSize: 18,
+    fontFamily: fonts.black,
+    textTransform: "uppercase",
+    color: colors.primary,
     marginTop: 4,
   },
   emptyText: {
-    fontSize: 11,
+    fontSize: 14,
     color: colors.muted,
     textAlign: "center",
     fontFamily: fonts.regular,

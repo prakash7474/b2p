@@ -8,15 +8,17 @@ import {
   View,
   type ScrollViewProps,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { colors, fonts, radius } from "@/src/theme";
+import { OnDark } from "@/src/components/controls";
+import { colors, fonts } from "@/src/theme";
 
 type ScreenProps = {
   title: string;
   subtitle?: string;
-  /** Portal label shown in the topbar (defaults to the vendor portal). */
+  /** Portal label shown above the title (defaults to the vendor portal). */
   portal?: "VENDOR PORTAL" | "CUSTOMER PORTAL";
-  /** Small chip icon shown next to the page title (AI pages style). */
+  /** Glyph shown in the round stamp beside the title. */
   icon?: keyof typeof MaterialCommunityIcons.glyphMap;
   iconTone?: "primary" | "danger";
   /** Right-hand action, usually a refresh button. */
@@ -28,8 +30,8 @@ type ScreenProps = {
 };
 
 /**
- * Shared page shell: admin-style topbar (brand + online status),
- * page heading, and scrollable padded content.
+ * Shared page shell: forest-green header with the page title as a big
+ * billboard word, then scrollable padded content on white.
  */
 export function Screen({
   title,
@@ -43,28 +45,14 @@ export function Screen({
   keyboardShouldPersistTaps,
   children,
 }: ScreenProps) {
+  const insets = useSafeAreaInsets();
+  const stampColor = iconTone === "danger" ? colors.teal : colors.butter;
+
   return (
     <View style={styles.screen}>
-      <View style={styles.topbar}>
-        <View style={styles.brandRow}>
-          <View style={styles.brandLogo}>
-            <Text style={styles.brandLogoText}>B2</Text>
-          </View>
-          <View>
-            <Text style={styles.brandName}>B2POnline</Text>
-            <Text style={styles.brandSubtitle}>{portal}</Text>
-          </View>
-        </View>
-
-        <View style={styles.onlineRow}>
-          <View style={styles.onlineDot} />
-          <Text style={styles.onlineText}>System Online</Text>
-        </View>
-      </View>
-
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps={keyboardShouldPersistTaps ?? "handled"}
         refreshControl={
           onRefresh ? (
@@ -77,47 +65,47 @@ export function Screen({
           ) : undefined
         }
       >
-        <View style={styles.headingRow}>
-          <View style={styles.headingText}>
-            <View style={styles.headingTitleRow}>
-              {icon ? (
-                <View
-                  style={[
-                    styles.headingIcon,
-                    iconTone === "danger" && styles.headingIconDanger,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name={icon}
-                    size={20}
-                    color={iconTone === "danger" ? colors.danger : colors.primary}
-                  />
-                </View>
-              ) : null}
-              <Text style={styles.title}>{title}</Text>
+        <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
+          <View style={styles.brandRow}>
+            <View style={styles.brandText}>
+              <Text style={styles.portal}>{portal}</Text>
+              <Text style={styles.brandName}>Batter to Platter</Text>
             </View>
-            {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+            <OnDark.Provider value>{action}</OnDark.Provider>
           </View>
 
-          {action}
+          <View style={styles.titleRow}>
+            <Text
+              style={styles.title}
+              numberOfLines={2}
+              adjustsFontSizeToFit
+              minimumFontScale={0.6}
+              accessibilityRole="header"
+            >
+              {title}
+            </Text>
+            {icon ? (
+              <View style={[styles.stamp, { borderColor: stampColor }]}>
+                <MaterialCommunityIcons name={icon} size={26} color={stampColor} />
+              </View>
+            ) : null}
+          </View>
+
+          {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
         </View>
 
-        {children}
+        <View style={styles.content}>{children}</View>
       </ScrollView>
     </View>
   );
 }
 
-/** Full-screen loading state (matches the admin loading screen). */
+/** Full-screen loading state on the brand green. */
 export function LoadingScreen({ label = "Loading..." }: { label?: string }) {
   return (
     <View style={styles.loadingScreen}>
-      <View style={styles.loadingBox}>
-        <View style={styles.loadingLogo}>
-          <Text style={styles.brandLogoText}>B2</Text>
-        </View>
-        <Text style={styles.loadingText}>{label}</Text>
-      </View>
+      <Text style={styles.loadingWord}>B2P</Text>
+      <Text style={styles.loadingText}>{label}</Text>
     </View>
   );
 }
@@ -127,135 +115,88 @@ export const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  topbar: {
-    minHeight: 62,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    backgroundColor: colors.surface,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+  scroll: {
+    flex: 1,
+  },
+  scrollContent: {
+    // Clears the bottom tab bar + safe area so the last card is never covered.
+    paddingBottom: 110,
+  },
+  header: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: 20,
+    paddingBottom: 24,
+    gap: 16,
   },
   brandRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-  },
-  brandLogo: {
-    width: 36,
-    height: 36,
-    borderRadius: radius.chip,
-    backgroundColor: colors.primary,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  brandLogoText: {
-    color: "#fff",
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-    fontSize: 15,
-  },
-  brandName: {
-    fontSize: 15,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-    color: colors.text,
-  },
-  brandSubtitle: {
-    fontSize: 9,
-    letterSpacing: 0.5,
-    color: colors.muted,
-    marginTop: 2,
-    fontFamily: fonts.medium,
-  },
-  onlineRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  onlineDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.online,
-  },
-  onlineText: {
-    fontSize: 10,
-    color: colors.muted,
-    fontFamily: fonts.regular,
-  },
-  scroll: {
-    flex: 1,
-  },
-  content: {
-    padding: 18,
-    // Clears the 60px bottom tab bar + safe area so the last card is never
-    // covered (vendor portal tabs use the same shell).
-    paddingBottom: 110,
-    gap: 16,
-  },
-  headingRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 12,
   },
-  headingText: {
+  brandText: {
     flex: 1,
+    gap: 2,
   },
-  headingTitleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  headingIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: radius.card,
-    backgroundColor: colors.primaryLight,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  headingIconDanger: {
-    backgroundColor: colors.dangerBg,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-    color: colors.text,
-  },
-  subtitle: {
+  portal: {
     fontSize: 12,
-    color: colors.muted,
-    marginTop: 5,
-    fontFamily: fonts.regular,
+    letterSpacing: 1.4,
+    color: colors.butter,
+    fontFamily: fonts.medium,
   },
-  loadingScreen: {
-    flex: 1,
-    backgroundColor: colors.background,
-    alignItems: "center",
-    justifyContent: "center",
+  brandName: {
+    fontSize: 18,
+    color: "#fff",
+    fontFamily: fonts.medium,
   },
-  loadingBox: {
+  titleRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
   },
-  loadingLogo: {
-    width: 38,
-    height: 38,
-    borderRadius: 9,
+  title: {
+    flex: 1,
+    fontSize: 52,
+    lineHeight: 50,
+    color: colors.butter,
+    fontFamily: fonts.black,
+    textTransform: "uppercase",
+    letterSpacing: -1,
+  },
+  stamp: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 2,
+    alignItems: "center",
+    justifyContent: "center",
+    transform: [{ rotate: "-12deg" }],
+  },
+  subtitle: {
+    fontSize: 15,
+    lineHeight: 21,
+    color: "#fff",
+    fontFamily: fonts.regular,
+  },
+  content: {
+    padding: 20,
+    gap: 18,
+  },
+  loadingScreen: {
+    flex: 1,
     backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
+    gap: 10,
+  },
+  loadingWord: {
+    fontSize: 72,
+    color: colors.butter,
+    fontFamily: fonts.black,
   },
   loadingText: {
-    color: colors.muted,
-    fontSize: 12,
+    color: "#fff",
+    fontSize: 14,
     fontFamily: fonts.regular,
   },
 });
-

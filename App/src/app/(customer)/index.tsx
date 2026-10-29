@@ -99,8 +99,8 @@ export default function CustomerHomeScreen() {
   return (
     <Screen
       portal="CUSTOMER PORTAL"
-      title={`Hi ${String(customer?.name ?? "there")}`}
-      subtitle="Shops within 5 km that have batter in stock"
+      title="Eat fresh"
+      subtitle={`Hi ${String(customer?.name ?? "there")}, these shops within 5 km have batter in stock`}
       action={
         <SecondaryButton
           label="Refresh"
@@ -179,7 +179,7 @@ export default function CustomerHomeScreen() {
                       label="Buy"
                       compact
                       loading={busyKey === key}
-                      icon={<MaterialCommunityIcons name="cart-plus" size={13} color="#fff" />}
+                      icon={<MaterialCommunityIcons name="cart-plus" size={18} color={colors.primary} />}
                       onPress={() => void buy(vendorKey, product)}
                     />
                   </View>
@@ -230,7 +230,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   liveMeta: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
@@ -246,14 +246,13 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   title: {
-    fontSize: 13,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
+    fontSize: 18,
+    fontFamily: fonts.medium,
     color: colors.text,
     flex: 1,
   },
   meta: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
@@ -263,14 +262,14 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingTop: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
+    borderTopColor: colors.line,
   },
   itemText: {
     flex: 1,
     gap: 2,
   },
   itemName: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "600",
     fontFamily: fonts.semibold,
     color: colors.text,

@@ -170,7 +170,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   aggregateLabel: {
-    fontSize: 11,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
@@ -180,7 +180,7 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bold,
   },
   aggregateBand: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: "600",
     fontFamily: fonts.semibold,
     marginBottom: 6,
@@ -188,7 +188,7 @@ const styles = StyleSheet.create({
   batchRow: {
     padding: 15,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
     gap: 6,
   },
   batchRowLast: {
@@ -205,18 +205,18 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   batchProduct: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "700",
     fontFamily: fonts.bold,
     color: colors.text,
   },
   batchId: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
   action: {
-    fontSize: 10,
+    fontSize: 13,
     fontFamily: fonts.medium,
     borderRadius: radius.control,
   },

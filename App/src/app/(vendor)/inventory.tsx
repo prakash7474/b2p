@@ -207,7 +207,7 @@ export default function BatchesScreen() {
                     label="Confirm"
                     compact
                     loading={busyId === id}
-                    icon={<MaterialCommunityIcons name="check-circle-outline" size={13} color="#fff" />}
+                    icon={<MaterialCommunityIcons name="check-circle-outline" size={18} color={colors.primary} />}
                     onPress={() => void receive(id)}
                   />
                 ) : batch.expired ? (
@@ -253,7 +253,7 @@ const styles = StyleSheet.create({
     padding: 15,
     gap: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   rowLast: {
     borderBottomWidth: 0,
@@ -270,13 +270,13 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   title: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "700",
     fontFamily: fonts.bold,
     color: colors.text,
   },
   meta: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },

@@ -125,7 +125,7 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   avatar: {
     width: 46,
@@ -152,7 +152,7 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   email: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
@@ -175,13 +175,13 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   locationTitle: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: "600",
     fontFamily: fonts.semibold,
     color: colors.text,
   },
   locationSubtitle: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     lineHeight: 15,
     fontFamily: fonts.regular,

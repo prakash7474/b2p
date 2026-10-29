@@ -23,18 +23,18 @@ export default function VendorLayout() {
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.tabInactive,
+        tabBarInactiveTintColor: colors.text,
         tabBarStyle: {
-          backgroundColor: colors.sidebar,
-          borderTopColor: colors.sidebarHover,
-          borderTopWidth: 1,
-          height: 60 + insets.bottom,
+          backgroundColor: colors.surface,
+          borderTopColor: colors.primary,
+          borderTopWidth: 2,
+          height: 64 + insets.bottom,
           paddingBottom: insets.bottom,
           paddingTop: 8,
         },
         tabBarLabelStyle: {
-          fontSize: 9,
-          fontFamily: fonts.semibold,
+          fontSize: 13,
+          fontFamily: fonts.medium,
         },
         tabBarItemStyle: {
           paddingHorizontal: 2,
@@ -46,7 +46,7 @@ export default function VendorLayout() {
         options={{
           title: "Home",
           tabBarIcon: ({ color }) => (
-            <MaterialCommunityIcons name="view-dashboard-outline" size={20} color={color} />
+            <MaterialCommunityIcons name="view-dashboard-outline" size={22} color={color} />
           ),
         }}
       />
@@ -55,7 +55,7 @@ export default function VendorLayout() {
         options={{
           title: "Batches",
           tabBarIcon: ({ color }) => (
-            <MaterialCommunityIcons name="package-variant" size={20} color={color} />
+            <MaterialCommunityIcons name="package-variant" size={22} color={color} />
           ),
         }}
       />
@@ -66,7 +66,7 @@ export default function VendorLayout() {
         options={{
           title: "Forecast",
           tabBarIcon: ({ color }) => (
-            <MaterialCommunityIcons name="chart-timeline-variant" size={20} color={color} />
+            <MaterialCommunityIcons name="chart-timeline-variant" size={22} color={color} />
           ),
         }}
       />
@@ -75,7 +75,7 @@ export default function VendorLayout() {
         options={{
           title: "Risk",
           tabBarIcon: ({ color }) => (
-            <MaterialCommunityIcons name="shield-alert-outline" size={20} color={color} />
+            <MaterialCommunityIcons name="shield-alert-outline" size={22} color={color} />
           ),
         }}
       />
@@ -84,7 +84,7 @@ export default function VendorLayout() {
         options={{
           title: "Profile",
           tabBarIcon: ({ color }) => (
-            <MaterialCommunityIcons name="account-circle-outline" size={20} color={color} />
+            <MaterialCommunityIcons name="account-circle-outline" size={22} color={color} />
           ),
         }}
       />

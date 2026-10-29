@@ -163,7 +163,7 @@ export default function DashboardScreen() {
                     label="Confirm"
                     compact
                     loading={busyId === id}
-                    icon={<MaterialCommunityIcons name="check-circle-outline" size={13} color="#fff" />}
+                    icon={<MaterialCommunityIcons name="check-circle-outline" size={18} color={colors.primary} />}
                     onPress={() => void confirm(id)}
                   />
                 </View>
@@ -269,7 +269,7 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   rowLast: {
     borderBottomWidth: 0,
@@ -279,13 +279,13 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   rowTitle: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "700",
     fontFamily: fonts.bold,
     color: colors.text,
   },
   rowMeta: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
@@ -293,7 +293,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.tableHeader,
   },
   aggregateValue: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: "700",
     fontFamily: fonts.bold,
   },
@@ -301,7 +301,7 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   riskHeader: {
     flexDirection: "row",
@@ -317,7 +317,7 @@ const styles = StyleSheet.create({
     gap: 11,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   activityIcon: {
     width: 28,
@@ -328,7 +328,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   activityText: {
-    fontSize: 11,
+    fontSize: 13,
     lineHeight: 16,
     color: colors.text,
     fontFamily: fonts.regular,

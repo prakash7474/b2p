@@ -104,7 +104,7 @@ export default function ForecastScreen() {
       <Button
         label="Request Batches"
         full
-        icon={<MaterialCommunityIcons name="truck-delivery-outline" size={15} color="#fff" />}
+        icon={<MaterialCommunityIcons name="truck-delivery-outline" size={18} color={colors.primary} />}
         onPress={() => router.push("/(vendor)/request-batches")}
       />
 
@@ -358,7 +358,7 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   legendText: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
@@ -366,7 +366,7 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     marginBottom: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   chartRowLast: {
     borderBottomWidth: 0,
@@ -374,7 +374,7 @@ const styles = StyleSheet.create({
     paddingBottom: 0,
   },
   chartProduct: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "600",
     fontFamily: fonts.semibold,
     color: colors.text,
@@ -383,7 +383,7 @@ const styles = StyleSheet.create({
   detailRow: {
     padding: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
     gap: 10,
   },
   detailHeader: {
@@ -393,7 +393,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   detailProduct: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "700",
     fontFamily: fonts.bold,
     color: colors.text,
@@ -405,19 +405,19 @@ const styles = StyleSheet.create({
   },
   metric: {
     flex: 1,
-    backgroundColor: "#faf8f5",
+    backgroundColor: colors.tableHeader,
     borderRadius: 8,
     paddingVertical: 8,
     paddingHorizontal: 9,
     gap: 3,
   },
   metricLabel: {
-    fontSize: 9,
+    fontSize: 12,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
   metricValue: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: "600",
     fontFamily: fonts.semibold,
     color: colors.text,
@@ -437,32 +437,32 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   mismatchDeficit: {
-    backgroundColor: "#fff5f5",
-    borderColor: "#fed7d7",
+    backgroundColor: colors.dangerBg,
+    borderColor: colors.danger,
   },
   mismatchText: {
-    fontSize: 11,
+    fontSize: 13,
     fontFamily: fonts.medium,
     flex: 1,
     lineHeight: 15,
   },
   mismatchBalanced: {
-    backgroundColor: "#f0fff4",
-    borderColor: "#c6f6d5",
+    backgroundColor: colors.successBg,
+    borderColor: colors.success,
   },
   coldStart: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
   suggestions: {
     gap: 6,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
+    borderTopColor: colors.line,
     paddingTop: 8,
   },
   suggestTitle: {
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: "700",
     fontFamily: fonts.bold,
     color: colors.text,
@@ -474,7 +474,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   suggestText: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
     flex: 1,
@@ -493,13 +493,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
   },
   chipId: {
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: "700",
     fontFamily: fonts.bold,
     color: colors.primaryDark,
   },
   chipMeta: {
-    fontSize: 9,
+    fontSize: 12,
     color: colors.muted,
     fontFamily: fonts.regular,
   },

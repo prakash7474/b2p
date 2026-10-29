@@ -1,61 +1,51 @@
-import { Platform, type TextStyle, type ViewStyle } from "react-native";
+import { type TextStyle } from "react-native";
 
 /**
- * Design tokens mirrored from the admin dashboard stylesheet
- * (admin-web/src/App.css) so the mobile app shares the same look.
+ * Design tokens for the shop and customer apps: forest green, charcoal and
+ * white with butter-yellow / teal billboard accents, outlined controls, no shadows.
  */
 export const colors = {
-  primary: "#e86a33",
-  primaryDark: "#c94f20",
-  primaryLight: "#fff0e8",
+  primary: "#035542",
+  primaryDark: "#023b2e",
+  primaryLight: "#f9e9a9",
+  butter: "#f9e9a9",
+  teal: "#56dddb",
 
-  sidebar: "#242321",
-  sidebarHover: "#33312e",
-  tabInactive: "#bdb9b3",
+  sidebar: "#333333",
 
-  text: "#252525",
-  muted: "#77736e",
-  background: "#faf9f7",
+  text: "#333333",
+  muted: "#5c5c5c",
+  background: "#ffffff",
   surface: "#ffffff",
-  border: "#e8e4df",
+  border: "#035542",
+  line: "#cfdcd8",
 
-  success: "#2f855a",
-  successBg: "#f0f8f3",
-  warning: "#c47a18",
-  warningBg: "#fff8e8",
-  danger: "#c94c4c",
-  dangerBg: "#fff1f1",
-  neutral: "#66615b",
-  neutralBg: "#f1efec",
+  success: "#035542",
+  successBg: "#e6f2ee",
+  warning: "#8a5a00",
+  warningBg: "#fbf3d0",
+  danger: "#b3261e",
+  dangerBg: "#fbeceb",
+  neutral: "#333333",
+  neutralBg: "#f2f2f2",
 
-  online: "#43a66d",
-  tableHeader: "#faf8f5",
+  tableHeader: "#fbf6dd",
 };
 
 export const fonts = {
-  regular: "Inter_400Regular",
-  medium: "Inter_500Medium",
-  semibold: "Inter_600SemiBold",
-  bold: "Inter_700Bold",
+  regular: "WorkSans_400Regular",
+  medium: "WorkSans_500Medium",
+  semibold: "WorkSans_600SemiBold",
+  bold: "WorkSans_700Bold",
+  black: "WorkSans_900Black",
 };
 
 export const radius = {
-  card: 12,
-  control: 8,
-  chip: 10,
-  pill: 20,
+  card: 20,
+  control: 14,
+  chip: 100,
+  pill: 100,
 };
-
-export const shadow: ViewStyle = Platform.select<ViewStyle>({
-  ios: {
-    shadowColor: "#28231e",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 18,
-  },
-  android: { elevation: 2 },
-  default: {},
-});
 
 export type StatusTone = "success" | "warning" | "danger" | "neutral";
 
@@ -100,33 +90,10 @@ export function formatStatus(status: unknown): string {
 }
 
 export const textStyles = {
-  title: {
-    fontSize: 25,
-    fontWeight: "700",
-    color: colors.text,
-    fontFamily: fonts.bold,
-  } satisfies TextStyle,
-  subtitle: {
-    fontSize: 12,
-    color: colors.muted,
-    marginTop: 6,
-    fontFamily: fonts.regular,
-  } satisfies TextStyle,
   sectionTitle: {
-    fontSize: 17,
-    fontWeight: "700",
-    color: colors.text,
-    fontFamily: fonts.bold,
-  } satisfies TextStyle,
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: colors.text,
-    fontFamily: fonts.bold,
-  } satisfies TextStyle,
-  caption: {
-    fontSize: 10,
-    color: colors.muted,
-    fontFamily: fonts.regular,
+    fontSize: 20,
+    color: colors.primary,
+    fontFamily: fonts.black,
+    textTransform: "uppercase",
   } satisfies TextStyle,
 };
