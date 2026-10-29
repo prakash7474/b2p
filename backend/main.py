@@ -12,7 +12,7 @@ if __package__:
     from .common import (_field, _product_key, _batch_remaining, _batch_volume, _batch_threshold,
                          _sellable_batches, _adjust_inventory, _hours_to_expiry,
                          _find_vendor, _vendor_id_values, _find_login_user, _vendor_for_user,
-                         _vendor_status, _locality_tier, _held_batches, _log,
+                         _vendor_status, _locality_tier, _held_batches, _log, _hours_since,
                          _forget_catalog)
     from . import ml  # noqa: F401  registers the model routes
 else:
@@ -20,7 +20,7 @@ else:
     from common import (_field, _product_key, _batch_remaining, _batch_volume, _batch_threshold,
                         _sellable_batches, _adjust_inventory, _hours_to_expiry,
                         _find_vendor, _vendor_id_values, _find_login_user, _vendor_for_user,
-                        _vendor_status, _locality_tier, _held_batches, _log,
+                        _vendor_status, _locality_tier, _held_batches, _log, _hours_since,
                         _forget_catalog)
     import ml  # noqa: F401  registers the model routes
 
@@ -164,6 +164,10 @@ def _expiry_loop():
             expire_batches()
         except Exception as e:  # a failed run is retried next time; never kill the thread
             print(f"[WARN] Expiry check failed: {e}")
+        try:
+            ml.refresh_forecasts()
+        except Exception as e:
+            print(f"[WARN] Forecast refresh failed: {e}")
         threading.Event().wait(EXPIRY_CHECK_SECONDS)
 
 
@@ -872,16 +876,22 @@ def _kg(value):
     return f"{round(value, 1):g} kg"
 
 
-@app.get("/shop-stock")
-def shop_stock(user: dict = Depends(current_user)):
+def _shop_stock():
     """What every shop holds right now, per product, built from batches (the source of truth),
     with the alerts the admin should see for that shop."""
-    require_role(user)
     now = datetime.datetime.utcnow()
     # Latest forecast per shop and product for the window still open, from the predictions log.
     forecasts = {}
     for pred in COLS["predictions"].find({"windowEnd": {"$gte": now}}).sort("generatedAt", 1):
         forecasts[(pred.get("vendorId"), pred.get("productId"))] = float(pred.get("predictedValue") or 0)
+
+    catalog = {}
+    for product in COLS["products"].find({}, {"product_name": 1}):
+        label = ml._model_label(product.get("product_name"))
+        if label:
+            catalog.setdefault(label, product["product_name"])
+    blank = lambda name: {"product_name": name, "held_kg": 0.0, "sellable_kg": 0.0, "awaiting_kg": 0.0,
+                          "expired_kg": 0.0, "threshold_kg": 0.0, "batches": 0, "next_expiry_hours": None}
 
     shops = []
     for vendor in COLS["vendors"].find():
@@ -891,9 +901,7 @@ def shop_stock(user: dict = Depends(current_user)):
         products = {}
         for batch in held:
             name = _field(batch, "product_name", "product_id", default="Batter")
-            row = products.setdefault(name, {"product_name": name, "held_kg": 0.0, "sellable_kg": 0.0,
-                                             "awaiting_kg": 0.0, "expired_kg": 0.0, "threshold_kg": 0.0,
-                                             "batches": 0, "next_expiry_hours": None})
+            row = products.setdefault(name, blank(name))
             kg = _batch_remaining(batch)
             row["batches"] += 1
             if batch["expired"]:
@@ -909,6 +917,13 @@ def shop_stock(user: dict = Depends(current_user)):
             if row["next_expiry_hours"] is None or hours < row["next_expiry_hours"]:
                 row["next_expiry_hours"] = hours
 
+        # A product the shop is forecast to sell but holds none of still gets a row (out of stock).
+        held_labels = {ml._model_label(name) for name in products}
+        for (vid, label), kg in forecasts.items():
+            if vid in _vendor_id_values(vendor) and label not in held_labels and kg > 0 and label in catalog:
+                products[catalog[label]] = blank(catalog[label])
+                held_labels.add(label)
+
         alerts = []
         for row in products.values():
             name = row["product_name"]
@@ -922,16 +937,21 @@ def shop_stock(user: dict = Depends(current_user)):
             if row["next_expiry_hours"] is not None:
                 row["next_expiry_hours"] = round(row["next_expiry_hours"], 1)
             if row["expired_kg"]:
-                alerts.append({"level": "danger", "text": f"{name}: {_kg(row['expired_kg'])} expired, return or discard it"})
+                alerts.append({"kind": "expired", "level": "danger",
+                               "text": f"{name}: {_kg(row['expired_kg'])} expired, return or discard it"})
             if row["next_expiry_hours"] is not None and row["next_expiry_hours"] <= EXPIRY_SOON_HOURS:
-                alerts.append({"level": "warning", "text": f"{name}: a batch expires in {row['next_expiry_hours']:g} h, sell it first"})
+                alerts.append({"kind": "expiring", "level": "warning",
+                               "text": f"{name}: a batch expires in {row['next_expiry_hours']:g} h, sell it first"})
             if row["low_stock"]:
-                alerts.append({"level": "warning", "text": f"{name}: low stock, {_kg(row['sellable_kg'])} left"})
+                alerts.append({"kind": "low", "level": "warning",
+                               "text": f"{name}: low stock, {_kg(row['sellable_kg'])} left"})
             if forecast is not None and row["sellable_kg"] + row["awaiting_kg"] < forecast:
-                alerts.append({"level": "warning", "text": f"{name}: {_kg(row['sellable_kg'] + row['awaiting_kg'])} "
-                                                          f"on hand, below the {_kg(forecast)} forecast"})
+                alerts.append({"kind": "below_forecast", "level": "warning",
+                               "text": f"{name}: {_kg(row['sellable_kg'] + row['awaiting_kg'])} "
+                                       f"on hand, below the {_kg(forecast)} forecast"})
             if row["awaiting_kg"]:
-                alerts.append({"level": "info", "text": f"{name}: {_kg(row['awaiting_kg'])} waiting for the shop to confirm receipt"})
+                alerts.append({"kind": "awaiting", "level": "info",
+                               "text": f"{name}: {_kg(row['awaiting_kg'])} waiting for the shop to confirm receipt"})
 
         rows = sorted(products.values(), key=lambda r: r["product_name"])
         shops.append({
@@ -947,7 +967,82 @@ def shop_stock(user: dict = Depends(current_user)):
         })
     # Shops that need attention first.
     shops.sort(key=lambda s: (-sum(a["level"] != "info" for a in s["alerts"]), s["shop_name"] or ""))
+    return shops
+
+
+@app.get("/shop-stock")
+def shop_stock(user: dict = Depends(current_user)):
+    require_role(user)
+    shops = _shop_stock()
     return {"count": len(shops), "shops": shops}
+
+
+@app.get("/dashboard-summary")
+def dashboard_summary(user: dict = Depends(current_user)):
+    """The admin dashboard's quick-reference numbers, in one call."""
+    require_role(user)
+    shops = _shop_stock()
+
+    # Factory stock: unassigned batches that are still good (factory storage is assumed refrigerated).
+    unassigned = [b for b in COLS["batches"].find({"status": "available", "expired_at": {"$exists": False}})
+                  if _batch_remaining(b) > 0 and _hours_to_expiry({}, b) > 0]
+    factory = {}
+    for batch in unassigned:
+        label = ml._model_label(_field(batch, "product_name", "product_id"))
+        factory[label] = factory.get(label, 0.0) + _batch_remaining(batch)
+    made = [_hours_since(_field(b, "manufactured_at", "created_at")) for b in unassigned]
+    made = [hours for hours in made if hours is not None]
+
+    # Network demand for the window: every shop's cached forecast, plus what each shop is short of
+    # (demand + safety stock - what it holds or has on the way); factory stock covers part of that.
+    safety = ml.demand_bundle["safety_stock"] if ml.demand_bundle else {}
+    demand = {}
+    for shop in shops:
+        for row in shop["products"]:
+            label = ml._model_label(row["product_name"])
+            if not label or row["forecast_kg"] is None:
+                continue
+            entry = demand.setdefault(label, {"product_name": row["product_name"], "demand_kg": 0.0,
+                                              "short_kg": 0.0, "shops": 0})
+            entry["demand_kg"] += row["forecast_kg"]
+            entry["short_kg"] += max(0.0, row["forecast_kg"] + float(safety.get(label, 0.0))
+                                     - row["sellable_kg"] - row["awaiting_kg"])
+            entry["shops"] += 1
+    for label, entry in demand.items():
+        entry["factory_kg"] = round(factory.get(label, 0.0), 1)
+        entry["to_make_kg"] = round(max(0.0, entry["short_kg"] - entry["factory_kg"]), 1)
+        entry["demand_kg"] = round(entry["demand_kg"], 1)
+        entry["short_kg"] = round(entry["short_kg"], 1)
+    products = sorted(demand.values(), key=lambda e: e["product_name"])
+
+    attention = [s for s in shops if any(a["level"] != "info" for a in s["alerts"])]
+    kinds = {}
+    for shop in attention:
+        for kind in {a["kind"] for a in shop["alerts"] if a["level"] != "info"}:
+            kinds[kind] = kinds.get(kind, 0) + 1
+    rows = [row for shop in shops for row in shop["products"]]
+    day, window = ml._slot_of(datetime.datetime.utcnow())
+    return {
+        "window": {"date": day.isoformat(), "label": ("morning", "evening")[window]},
+        "demand": {
+            "products": products,
+            "total_kg": round(sum(e["demand_kg"] for e in products), 1),
+            "to_make_kg": round(sum(e["to_make_kg"] for e in products), 1),
+            "shops_forecast": sum(1 for s in shops if any(r["forecast_kg"] is not None for r in s["products"])),
+            "shops_live": sum(1 for s in shops if s["status"] in ("active", "approved")),
+        },
+        "attention": {"shops": len(attention), "by_kind": kinds},
+        "stock": {
+            "sellable_kg": round(sum(r["sellable_kg"] for r in rows), 1),
+            "awaiting_kg": round(sum(r["awaiting_kg"] for r in rows), 1),
+            "expired_kg": round(sum(r["expired_kg"] for r in rows), 1),
+        },
+        "unassigned": {
+            "batches": len(unassigned),
+            "kg": round(sum(_batch_remaining(b) for b in unassigned), 1),
+            "oldest_hours": round(max(made), 1) if made else None,
+        },
+    }
 
 
 @app.post("/vendors/{vendor_id}/demands")
@@ -1034,7 +1129,9 @@ def create_demand(
     COLS["logs"].insert_one({
         "action": "create_demand",
         "vendor_id": vendor_id,
-        "demand_id": demand_id
+        "demand_id": demand_id,
+        "timestamp": datetime.datetime.utcnow(),
+        "message": f"{(_find_vendor(vendor_id) or {}).get('shop_name') or vendor_id} requested a batch",
     })
 
     return {
@@ -1388,7 +1485,7 @@ def set_vendor_status(vendor_id: str = Path(...), data: dict = Body(...), user: 
         "status": new_status, "verificationStatus": new_status, "updated_at": now}})
     COLS["logs"].insert_one({
         "type": "activity", "action": "set_vendor_status", "vendor_id": vendor.get("vendor_id"),
-        "status": new_status, "timestamp": now, "message": f"Vendor {vendor.get('vendor_id')} set to {new_status}",
+        "status": new_status, "timestamp": now, "message": f"{vendor.get('shop_name') or vendor.get('vendor_id')} set to {new_status}",
     })
     return {"message": f"Vendor {new_status}", "vendor_id": vendor.get("vendor_id"), "status": new_status}
 

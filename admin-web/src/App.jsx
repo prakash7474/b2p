@@ -100,7 +100,7 @@ const LOG_ACTIONS = {
 };
 
 // Entries saved without a message get a readable line instead of the raw action name.
-const LOG_TEXT = { login_customer: "A customer signed in" };
+const LOG_TEXT = { login_customer: "A customer signed in", create_demand: "A shop requested a batch" };
 const logText = (log) =>
   getValue(log, ["message", "event", "description"], "") ||
   LOG_TEXT[log.action] ||
@@ -331,19 +331,22 @@ function Topbar({ title, setOpen, onSignOut }) {
   );
 }
 
-function StatCard({ icon: Icon, title, value, text, action }) {
+function DashCard({ icon: Icon, title, value, text, action, children }) {
   return (
     <div className="dashboard-stat">
-      <div className="dashboard-stat-icon">
-        <Icon size={19} />
+      <div className="dashboard-stat-head">
+        <div className="dashboard-stat-icon">
+          <Icon size={19} />
+        </div>
+        <div className="dashboard-stat-label">{title}</div>
       </div>
-
-      <div className="dashboard-stat-label">{title}</div>
 
       <div className="dashboard-stat-value">
         <strong>{value}</strong>
         <span>{text}</span>
       </div>
+
+      {children}
 
       {action && (
         <button className="secondary-btn small-btn stat-action" onClick={action.onClick}>
@@ -355,26 +358,38 @@ function StatCard({ icon: Icon, title, value, text, action }) {
   );
 }
 
-function Dashboard({ vendors, products, batches, demands, logs, setPage, refresh }) {
+const ATTENTION_LABELS = {
+  expired: "expired stock",
+  expiring: "expiring soon",
+  low: "low stock",
+  below_forecast: "below forecast"
+};
+
+// Only alerts and decisions belong on the dashboard; the rest stays on the Activity page.
+const DASHBOARD_LOG_CATEGORIES = ["spoilage", "stock", "request", "vendor"];
+
+function Dashboard({ vendors, demands, logs, setPage, openInventory, refresh }) {
+  const { items: summary, loaded, reload } = useList("/dashboard-summary", null);
+  const ready = loaded && summary.demand;
+
   const pendingVendors = vendors.filter(
     (v) => String(vendorStatus(v)).toLowerCase() === "pending"
   ).length;
-  const liveVendors = vendors.filter((v) =>
-    ["active", "approved"].includes(String(vendorStatus(v)).toLowerCase())
-  ).length;
-
-  const active = batches.filter(isActiveBatch);
-  const unassigned = active.filter((b) => b.status === "available").length;
-
   // Only pending requests need the admin; the rest are history.
   const queued = demands.filter((d) => getValue(d, ["status"]) === "pending").length;
+  const recent = logs.filter((log) => DASHBOARD_LOG_CATEGORIES.includes(logCategory(log))).slice(0, 6);
+  const kg = (value) => `${Number(value || 0)} kg`;
 
   return (
     <div>
       <div className="dashboard-header">
         <div>
           <h1>Dashboard</h1>
-          <p>A compact view of your manufacturing operations</p>
+          <p>
+            {ready
+              ? `${formatStatus(summary.window.label)} sales window, ${parseServerDate(summary.window.date).toLocaleDateString()}`
+              : "A compact view of your manufacturing operations"}
+          </p>
         </div>
 
         <div className="dashboard-header-actions">
@@ -384,67 +399,124 @@ function Dashboard({ vendors, products, batches, demands, logs, setPage, refresh
               <ChevronRight size={16} />
             </button>
           )}
-          <button className="refresh-btn" onClick={refresh}>
+          {pendingVendors > 0 && (
+            <button className="header-cta" onClick={() => setPage("vendors")}>
+              {pendingVendors} vendor{pendingVendors === 1 ? "" : "s"} to approve
+              <ChevronRight size={16} />
+            </button>
+          )}
+          <button className="refresh-btn" onClick={() => { refresh(); reload(); }}>
             <RefreshCw size={15} />
             Refresh
           </button>
         </div>
       </div>
 
+      {loaded && !ready && (
+        <div className="alert alert-error">
+          <AlertTriangle size={16} />
+          Could not load the dashboard numbers. Is the backend running from this branch?
+        </div>
+      )}
+
       <div className="dashboard-stats">
-        <StatCard
-          icon={Store}
-          title="Vendors"
-          value={liveVendors}
-          text={pendingVendors ? `live, ${pendingVendors} pending` : "live shops"}
-          action={
-            pendingVendors > 0
-              ? { label: `Review ${pendingVendors} pending`, onClick: () => setPage("vendors") }
-              : null
-          }
-        />
-        <StatCard
+        <DashCard
+          icon={TrendingUp}
+          title={ready ? `Make for the ${summary.window.label}` : "Make today"}
+          value={ready ? kg(summary.demand.to_make_kg) : "..."}
+          text={ready ? `${kg(summary.demand.total_kg)} demand + safety stock, minus stock on hand` : ""}
+          action={{ label: "Open forecast", onClick: () => setPage("forecast") }}
+        >
+          {ready && (
+            <ul className="dash-lines">
+              {summary.demand.products.map((p) => (
+                <li key={p.product_name}>
+                  <span>{p.product_name}</span>
+                  <strong>make {kg(p.to_make_kg)}</strong>
+                  <em>demand {kg(p.demand_kg)}{p.factory_kg ? `, ${kg(p.factory_kg)} at factory` : ""}</em>
+                </li>
+              ))}
+            </ul>
+          )}
+          {ready && summary.demand.shops_forecast < summary.demand.shops_live && (
+            <p className="dash-note">
+              Forecast ready for {summary.demand.shops_forecast} of {summary.demand.shops_live} shops; the rest refresh within 15 minutes.
+            </p>
+          )}
+        </DashCard>
+
+        <DashCard
+          icon={AlertTriangle}
+          title="Shops needing attention"
+          value={ready ? summary.attention.shops : "..."}
+          text={ready ? (summary.attention.shops ? "with a stock problem" : "all shops are fine") : ""}
+          action={{ label: "Open inventory", onClick: () => openInventory(true) }}
+        >
+          {ready && Object.keys(summary.attention.by_kind).length > 0 && (
+            <div className="dash-chips">
+              {Object.entries(summary.attention.by_kind).map(([kind, count]) => (
+                <span key={kind} className={kind === "expired" ? "status status-danger" : "status status-warning"}>
+                  {count} {ATTENTION_LABELS[kind] || formatStatus(kind)}
+                </span>
+              ))}
+            </div>
+          )}
+        </DashCard>
+
+        <DashCard
+          icon={Warehouse}
+          title="Stock in shops"
+          value={ready ? kg(summary.stock.sellable_kg) : "..."}
+          text="sellable now"
+          action={{ label: "Open inventory", onClick: () => openInventory(false) }}
+        >
+          {ready && (
+            <ul className="dash-lines">
+              <li><span>On the way</span><strong>{kg(summary.stock.awaiting_kg)}</strong></li>
+              <li><span>Expired, to collect</span><strong>{kg(summary.stock.expired_kg)}</strong></li>
+            </ul>
+          )}
+        </DashCard>
+
+        <DashCard
           icon={Boxes}
-          title="Active Batches"
-          value={active.length}
-          text={`${unassigned} unassigned, ${active.length - unassigned} with shops`}
+          title="Unassigned batches"
+          value={ready ? summary.unassigned.batches : "..."}
+          text={ready ? `${kg(summary.unassigned.kg)} at the factory` : ""}
           action={{ label: "View batches", onClick: () => setPage("batches") }}
-        />
-        <StatCard
-          icon={Package}
-          title="Products"
-          value={products.length}
-          text="in the catalog"
-        />
+        >
+          {ready && summary.unassigned.oldest_hours !== null && (
+            <p className="dash-note">Oldest made {summary.unassigned.oldest_hours} h ago; its shelf life is running.</p>
+          )}
+        </DashCard>
       </div>
 
       <section className="dashboard-section activity-section">
-        <h2>Recent Activity</h2>
-        <p>Latest events recorded by the backend</p>
+        <h2>Recent Alerts &amp; Decisions</h2>
+        <p>Expiries, stock alerts, request decisions and vendor changes</p>
 
         <div className="activity-card">
-          {logs.length === 0 ? (
-            <div className="empty-state">No activity found.</div>
+          {recent.length === 0 ? (
+            <div className="empty-state">Nothing to report.</div>
           ) : (
             <div className="activity-list">
-              {logs.slice(0, 6).map((log, index) => (
-                <div
-                  className="activity-item"
-                  key={log._id || log.id || index}
-                >
-                  <div className="activity-icon">
-                    <FileText size={14} />
+              {recent.map((log, index) => (
+                <div className="activity-item" key={log._id || log.id || index}>
+                  <div className={`activity-icon ${log.type === "alert" ? "activity-icon-alert" : ""}`}>
+                    {log.type === "alert" ? <AlertTriangle size={14} /> : <FileText size={14} />}
                   </div>
                   <div>
                     <div className="activity-text">{logText(log)}</div>
-                    <div className="activity-time">
-                      {logTime(log)?.toLocaleString() || ""}
-                    </div>
+                    <div className="activity-time">{logTime(log)?.toLocaleString() || ""}</div>
                   </div>
                 </div>
               ))}
             </div>
           )}
+          <button className="secondary-btn small-btn stat-action" onClick={() => setPage("activity")}>
+            View all activity
+            <ChevronRight size={14} />
+          </button>
         </div>
       </section>
     </div>
@@ -623,9 +695,9 @@ function Vendors({ vendors, search, setSearch, refresh }) {
 
 const ALERT_CLASSES = { danger: "alert alert-error", warning: "alert alert-warning", info: "alert alert-info" };
 
-function Inventory({ search, setSearch }) {
+function Inventory({ search, setSearch, initialAttention = false }) {
   const { items: shops, loaded, reload, message } = useList("/shop-stock", "shops");
-  const [attentionOnly, setAttentionOnly] = useState(false);
+  const [attentionOnly, setAttentionOnly] = useState(initialAttention);
 
   const query = search.toLowerCase();
   const listed = shops.filter((shop) => {
@@ -1809,7 +1881,7 @@ function useList(url, key) {
   useEffect(() => {
     let live = true;
     request(url)
-      .then((data) => live && setItems(data[key] || []))
+      .then((data) => live && setItems(key ? data[key] || [] : data))
       .catch((error) => live && setMessage(error.message || "Unable to load."))
       .finally(() => live && setLoaded(true));
     return () => {
@@ -1949,6 +2021,12 @@ function Festivals({ search, setSearch }) {
 function App() {
   const [signedIn, setSignedIn] = useState(Boolean(authToken));
   const [page, setPage] = useState("dashboard");
+  // The dashboard can open Inventory already filtered to shops that need attention.
+  const [inventoryAttention, setInventoryAttention] = useState(false);
+  const goTo = (next) => {
+    setInventoryAttention(false);
+    setPage(next);
+  };
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const [vendors, setVendors] = useState([]);
@@ -2069,7 +2147,7 @@ function App() {
     <div className="app">
       <Sidebar
         page={page}
-        setPage={setPage}
+        setPage={goTo}
         open={mobileOpen}
         setOpen={setMobileOpen}
         demands={demands}
@@ -2082,11 +2160,13 @@ function App() {
           {page === "dashboard" && (
             <Dashboard
               vendors={vendors}
-              products={products}
-              batches={batches}
               demands={demands}
               logs={logs}
-              setPage={setPage}
+              setPage={goTo}
+              openInventory={(attention) => {
+                setInventoryAttention(attention);
+                setPage("inventory");
+              }}
               refresh={loadData}
             />
           )}
@@ -2117,7 +2197,14 @@ function App() {
 
           {page === "festivals" && <Festivals search={search} setSearch={setSearch} />}
 
-          {page === "inventory" && <Inventory search={search} setSearch={setSearch} />}
+          {page === "inventory" && (
+            <Inventory
+              key={inventoryAttention ? "attention" : "all"}
+              search={search}
+              setSearch={setSearch}
+              initialAttention={inventoryAttention}
+            />
+          )}
 
           {page === "demands" && (
             <Demands demands={demands} vendors={vendors} refresh={loadData} />

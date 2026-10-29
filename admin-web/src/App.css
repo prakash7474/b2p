@@ -349,6 +349,75 @@ button:disabled {
   margin-top: 14px;
 }
 
+.dashboard-stat {
+  display: flex;
+  flex-direction: column;
+}
+
+.dashboard-stat .stat-action {
+  align-self: flex-start;
+  margin-top: auto;
+}
+
+.dashboard-stat-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dashboard-stat-head .dashboard-stat-label {
+  margin-top: 0;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.dash-lines {
+  list-style: none;
+  margin: 14px 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dash-lines li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.dash-lines li span {
+  flex: 1;
+}
+
+.dash-lines li em {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 13px;
+  font-style: normal;
+}
+
+.dash-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 16px;
+}
+
+.dash-note {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.activity-card > .stat-action {
+  margin: 4px 0 16px;
+}
+
 .inventory-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -480,7 +549,7 @@ button:disabled {
 
 .dashboard-stats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 16px;
   margin-bottom: 30px;
 }
@@ -518,6 +587,7 @@ button:disabled {
 }
 
 .dashboard-stat-value strong {
+  white-space: nowrap;
   font-size: 40px;
   font-weight: 900;
   font-family: var(--display);

@@ -998,3 +998,42 @@ def test_shop_stock_splits_sellable_awaiting_and_expired(client, seeded, db):
     assert levels == ["danger", "info", "warning"]
     # the pending vendor holds nothing, so it is left out
     assert PENDING_VENDOR not in {s["vendor_id"] for s in body["shops"]}
+
+
+# ---------------------------------------------------------------------------
+# demand cache and GET /dashboard-summary
+# ---------------------------------------------------------------------------
+
+def test_forecast_reuses_this_windows_cached_demand(client, seeded):
+    seeded.products.insert_one({"product_id": "P001", "product_name": "Idli Batter"})
+    first = client.get(f"/vendors/{ACTIVE_VENDOR}/demand-forecast").json()["forecast"][0]
+    # a cached value is served as is, so changing it in the store shows up in the next read
+    seeded.predictions.update_one({"vendorId": ACTIVE_VENDOR, "productId": "Idly_Batter"},
+                                  {"$set": {"predictedValue": 99.0}})
+    again = client.get(f"/vendors/{ACTIVE_VENDOR}/demand-forecast").json()["forecast"][0]
+    assert first["predicted_demand"] != 99.0 and again["predicted_demand"] == 99.0
+    # a locality change makes the cache stale, so the model runs again
+    client.post(f"/vendors/{ACTIVE_VENDOR}/locality", json={"locality_tier": "mixed"})
+    fresh = client.get(f"/vendors/{ACTIVE_VENDOR}/demand-forecast").json()["forecast"][0]
+    assert fresh["predicted_demand"] != 99.0
+
+
+def test_dashboard_summary_totals_demand_and_what_to_make(client, seeded):
+    now = datetime.utcnow()
+    seeded.products.insert_one({"product_id": "P001", "product_name": "Idli Batter",
+                                "shelf_life_fridge_hrs": 72, "shelf_life_ambient_hrs": 24})
+    demand = client.get(f"/vendors/{ACTIVE_VENDOR}/demand-forecast").json()["forecast"][0]
+    seeded.batches.insert_many([
+        {"batch_id": "D1", "product_id": "P001", "product_name": "Idli Batter", "vendor_id": ACTIVE_VENDOR,
+         "status": "received", "volume_kg": 5, "manufactured_at": now - timedelta(hours=1)},
+        {"batch_id": "D2", "product_id": "P001", "product_name": "Idli Batter", "status": "available",
+         "volume_kg": 3, "manufactured_at": now - timedelta(hours=10)},
+    ])
+    body = client.get("/dashboard-summary").json()
+    idli = body["demand"]["products"][0]
+    assert idli["demand_kg"] == demand["predicted_demand"]
+    short = round(demand["recommended_stock"] - 5, 1)
+    assert (idli["short_kg"], idli["factory_kg"], idli["to_make_kg"]) == (short, 3.0, round(short - 3, 1))
+    assert body["stock"]["sellable_kg"] == 5.0
+    assert body["unassigned"]["batches"] == 1 and body["unassigned"]["oldest_hours"] == 10.0
+    assert body["demand"]["shops_forecast"] == 1

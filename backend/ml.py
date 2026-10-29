@@ -17,12 +17,12 @@ if __package__:
     from .common import (app, BASE_DIR, COLS, _field, _product_key, _batch_remaining, _batch_volume,
                          _batch_threshold, _hours_since, _held_batches, _find_vendor, _vendor_id_values,
                          current_user, require_role, require_vendor, LOCALITY_TIERS, _locality_tier,
-                         _has_fridge, _hours_to_expiry)
+                         _has_fridge, _hours_to_expiry, _vendor_status)
 else:
     from common import (app, BASE_DIR, COLS, _field, _product_key, _batch_remaining, _batch_volume,
                         _batch_threshold, _hours_since, _held_batches, _find_vendor, _vendor_id_values,
                         current_user, require_role, require_vendor, LOCALITY_TIERS, _locality_tier,
-                        _has_fridge, _hours_to_expiry)
+                        _has_fridge, _hours_to_expiry, _vendor_status)
 
 # Shops run on India time; the server's own clock zone must not move the sales windows.
 SHOP_TZ = ZoneInfo("Asia/Kolkata")
@@ -144,6 +144,8 @@ def _encode(encoder, value, default=0):
 
 # The model only knows two sales windows: training rows are hour 8 or hour 18.
 SLOT_HOURS = (8, 18)
+# Weather is refreshed hourly, so a cached demand older than this is recomputed.
+FORECAST_MAX_AGE = datetime.timedelta(hours=1)
 
 def _slot_of(moment):
     """(India date, 0 = morning / 1 = evening) for a naive UTC timestamp."""
@@ -312,16 +314,35 @@ def _vendor_forecast(vendor, ctx):
         if label and hours_left > 0 and _batch_remaining(batch) > 0 and batch.get("batch_id") not in pending_batch_ids:
             available.setdefault(label, []).append((hours_left, batch))
 
-    # Latest DEMAND feature snapshot per product. The ML pipeline writes these in
-    # camelCase with the inputs nested under featureVector.
-    history = {}
-    for snap in COLS["feature_snapshots"].find({
-        "vendorId": {"$in": _vendor_id_values(vendor)},
-        "predictionType": "DEMAND",
-    }).sort("windowEnd", -1):
-        label = _model_label(snap.get("productId"))
-        if label and label not in history:
-            history[label] = snap.get("featureVector") or {}
+    slot = _slot_of(datetime.datetime.utcnow())
+    window_start, window_end = _slot_bounds(slot)
+    # Demand for this window computed within the hour is reused: the model inputs (weather,
+    # festival, past windows' sales) do not change inside a window, only the stock does.
+    fresh_after = datetime.datetime.utcnow() - FORECAST_MAX_AGE
+    cached = {
+        pred["productId"]: pred for pred in COLS["predictions"].find({
+            "predictionType": "DEMAND", "vendorId": vendor.get("vendor_id"),
+            "windowStart": window_start, "generatedAt": {"$gte": fresh_after},
+        })
+    }
+
+    # Sales history and snapshots are only read when some product needs a fresh model run.
+    inputs = {}
+
+    def model_inputs():
+        if not inputs:
+            # Latest DEMAND feature snapshot per product. The ML pipeline writes these in
+            # camelCase with the inputs nested under featureVector.
+            history = {}
+            for snap in COLS["feature_snapshots"].find({
+                "vendorId": {"$in": _vendor_id_values(vendor)},
+                "predictionType": "DEMAND",
+            }).sort("windowEnd", -1):
+                label = _model_label(snap.get("productId"))
+                if label and label not in history:
+                    history[label] = snap.get("featureVector") or {}
+            inputs.update(history=history, sales=_sales_series(vendor, slot))
+        return inputs["history"], inputs["sales"]
 
     locality = _field(vendor, "localityTier", "locality_tier", default="mixed")
     locality = _locality_tier(locality) or "mixed"
@@ -332,31 +353,31 @@ def _vendor_forecast(vendor, ctx):
         "hotspotDensityScore": float(_field(vendor, "hotspotDensityScore", "hotspot_density_score", default=18)),
     }
 
-    slot = _slot_of(datetime.datetime.utcnow())
-    sales = _sales_series(vendor, slot)
-    window_start, window_end = _slot_bounds(slot)
-
     forecasts = []
     for label in sorted(set(names) | set(held)):
         batches = held.get(label, [])
-        series, snapshot = sales.get(label), history.get(label)
-        # shortcut: under a week of real sales, the snapshot or the baseline wins; blend them once shops have data.
-        if series and len(series) >= 14:
-            source, past = "sales", _history_features(series)
-        elif snapshot is not None:
-            source, past = "snapshot", {name: float(snapshot.get(name, 0.0)) for name in HISTORY_FEATURES}
+        if label in cached:
+            demand, source, row = float(cached[label]["predictedValue"]), cached[label].get("historySource", "baseline"), None
         else:
-            source = "baseline"
-            past = BASELINE_HISTORY.get((label, slot[1], locality)) or BASELINE_HISTORY.get((label, slot[1])) \
-                or {name: 0.0 for name in HISTORY_FEATURES}
-        row = {
-            **ctx,
-            **vendor_features,
-            **past,
-            "productIdEnc": _encode(demand_bundle["product_encoder"], label),
-        }
-        df_input = pd.DataFrame([row])[demand_bundle["features"]]
-        demand = round(float(np.clip(demand_bundle["model"].predict(df_input)[0], 0, None)), 1)
+            history, sales = model_inputs()
+            series, snapshot = sales.get(label), history.get(label)
+            # shortcut: under a week of real sales, the snapshot or the baseline wins; blend them once shops have data.
+            if series and len(series) >= 14:
+                source, past = "sales", _history_features(series)
+            elif snapshot is not None:
+                source, past = "snapshot", {name: float(snapshot.get(name, 0.0)) for name in HISTORY_FEATURES}
+            else:
+                source = "baseline"
+                past = BASELINE_HISTORY.get((label, slot[1], locality)) or BASELINE_HISTORY.get((label, slot[1])) \
+                    or {name: 0.0 for name in HISTORY_FEATURES}
+            row = {
+                **ctx,
+                **vendor_features,
+                **past,
+                "productIdEnc": _encode(demand_bundle["product_encoder"], label),
+            }
+            df_input = pd.DataFrame([row])[demand_bundle["features"]]
+            demand = round(float(np.clip(demand_bundle["model"].predict(df_input)[0], 0, None)), 1)
         safety = round(float(demand_bundle["safety_stock"].get(label, 0.0)), 1)
         recommended = round(demand + safety, 1)
         # Expired stock cannot be sold, so it does not cover demand.
@@ -367,14 +388,16 @@ def _vendor_forecast(vendor, ctx):
 
         # One record per vendor/product/window (same shape as the ML pipeline's
         # rows), so forecasts can later be scored against that window's sales.
-        COLS["predictions"].update_one(
-            {"predictionType": "DEMAND", "vendorId": vendor.get("vendor_id"), "productId": label,
-             "windowStart": window_start},
-            {"$set": {"windowEnd": window_end, "numericValue": demand, "predictedValue": demand,
-                      "recommendedDispatch": refill, "inputFeatures": row, "modelVersion": "v1.0",
-                      "historySource": source, "generatedAt": datetime.datetime.utcnow()}},
-            upsert=True,
-        )
+        # It doubles as the demand cache, so it is only written after a model run.
+        if row is not None:
+            COLS["predictions"].update_one(
+                {"predictionType": "DEMAND", "vendorId": vendor.get("vendor_id"), "productId": label,
+                 "windowStart": window_start},
+                {"$set": {"windowEnd": window_end, "numericValue": demand, "predictedValue": demand,
+                          "recommendedDispatch": refill, "inputFeatures": row, "modelVersion": "v1.0",
+                          "historySource": source, "generatedAt": datetime.datetime.utcnow()}},
+                upsert=True,
+            )
 
         if refill > 0:
             status = "Restock Needed"
@@ -403,6 +426,29 @@ def _vendor_forecast(vendor, ctx):
         })
 
     return forecasts, sorted(unsupported)
+
+
+def _forget_forecasts(vendor=None):
+    """Mark cached demand stale (all shops, or one) after an input the model reads changes.
+    The records stay as the forecast log; the next read recomputes and overwrites them."""
+    query = {"predictionType": "DEMAND", "windowEnd": {"$gte": datetime.datetime.utcnow()}}
+    if vendor is not None:
+        query["vendorId"] = vendor.get("vendor_id")
+    COLS["predictions"].update_many(query, {"$set": {"generatedAt": datetime.datetime(2000, 1, 1)}})
+
+
+def refresh_forecasts():
+    """Cache this window's demand for every live shop (run by the background timer),
+    so the dashboard total and each shop's forecast page read it instead of re-running the model."""
+    if not demand_bundle:
+        return 0
+    ctx = _demand_shared_context()
+    shops = 0
+    for vendor in COLS["vendors"].find({"vendor_id": {"$exists": True}}):
+        if _vendor_status(vendor) in ("active", "approved"):
+            _vendor_forecast(vendor, ctx)
+            shops += 1
+    return shops
 
 
 def _forecast_response(vendor, ctx):
@@ -481,6 +527,7 @@ def set_vendor_locality(vendor_id: str = Path(...), data: dict = Body(...), user
     # Write both spellings: seed vendors carry localityTier, which the forecast reads first.
     COLS["vendors"].update_one({"_id": vendor["_id"]}, {"$set": {
         "locality_tier": locality, "localityTier": locality, "updated_at": datetime.datetime.utcnow()}})
+    _forget_forecasts(vendor)
     return {"message": "Locality updated", "vendor_id": vendor.get("vendor_id"), "locality_tier": locality}
 
 
@@ -509,6 +556,7 @@ def add_festival(data: dict = Body(...), user: dict = Depends(current_user)):
            "festivalName": _field(data, "festivalName", "name", default=""),
            "region": data.get("region", "Tamil Nadu"), "updated_at": datetime.datetime.utcnow()}
     COLS["festival_calendar"].update_one({"date": start, "festivalType": festival_type}, {"$set": doc}, upsert=True)
+    _forget_forecasts()
     return {"message": "Festival saved", "festival": doc}
 
 
