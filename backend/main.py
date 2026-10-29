@@ -532,33 +532,123 @@ def get_vendor_restock_requests(vendor_id: str = Path(...), user: dict = Depends
     }
 
 
+PRODUCT_FIELDS = ("product_name", "category", "unit_type", "shelf_life_fridge_hrs", "shelf_life_ambient_hrs", "price")
+PRODUCT_NUMBERS = ("shelf_life_fridge_hrs", "shelf_life_ambient_hrs", "price")
+
+
+def _product_fields(data, partial):
+    """Validated product metadata from a request body (only the fields sent when partial)."""
+    fields = {key: data[key] for key in PRODUCT_FIELDS if key in data}
+    if "product_name" in fields or not partial:
+        fields["product_name"] = str(fields.get("product_name") or "").strip()
+        if not fields["product_name"]:
+            raise HTTPException(status_code=400, detail="product_name is required")
+    for key in PRODUCT_NUMBERS:
+        if key in fields:
+            try:
+                fields[key] = float(fields[key])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"{key} must be a number")
+            # Shelf life must be positive; a price of 0 is allowed.
+            if fields[key] < 0 or (key != "price" and fields[key] == 0):
+                raise HTTPException(status_code=400, detail=f"{key} must be greater than 0")
+    if not partial:
+        fields.setdefault("category", "")
+        fields.setdefault("unit_type", "kg")
+        for key in ("shelf_life_fridge_hrs", "shelf_life_ambient_hrs"):
+            if key not in fields:
+                raise HTTPException(status_code=400, detail=f"{key} is required")
+    return fields
+
+
+def _same_name_product(name, exclude_id=None):
+    key = _product_key(name)
+    for product in COLS["products"].find({}, {"product_id": 1, "product_name": 1}):
+        if _product_key(product.get("product_name")) == key and product.get("product_id") != exclude_id:
+            return product
+    return None
+
+
 @app.post("/products")
 def create_product(data: dict = Body(...), user: dict = Depends(current_user)):
     require_role(user)
-    product_id = data.get("product_id")
-    product_name = data.get("product_name")
-    if not product_id or not product_name:
-        raise HTTPException(status_code=400, detail="product_id and product_name are required")
+    fields = _product_fields(data, partial=False)
+    duplicate = _same_name_product(fields["product_name"])
+    if duplicate:
+        raise HTTPException(status_code=409, detail=f"{fields['product_name']} already exists as {duplicate['product_id']}")
+    product_id = str(data.get("product_id") or "").strip()
+    if not product_id:
+        # Next free P### id; the catalog is small, so a scan is fine.
+        taken = {p.get("product_id") for p in COLS["products"].find({}, {"product_id": 1})}
+        number = len(taken) + 1
+        while f"P{number:03d}" in taken:
+            number += 1
+        product_id = f"P{number:03d}"
     if COLS["products"].find_one({"product_id": product_id}):
         raise HTTPException(status_code=409, detail=f"Product with product_id {product_id} already exists")
-    product_doc = {
-        "product_id": product_id,
-        "product_name": product_name,
-        "category": data.get("category", ""),
-        "unit": data.get("unit", "kg"),
-        "shelf_life_hours": data.get("shelf_life_hours", 72),
-        "description": data.get("description", ""),
-        "created_at": datetime.datetime.utcnow().isoformat()
-    }
+    product_doc = {"product_id": product_id, **fields, "created_at": datetime.datetime.utcnow().isoformat()}
     result = COLS["products"].insert_one(product_doc)
     product_doc["_id"] = str(result.inserted_id)
     COLS["logs"].insert_one({
         "type": "activity",
         "action": "create_product",
         "product_id": product_id,
-        "message": f"Created product {product_name}"
+        "message": f"Created product {fields['product_name']}"
     })
     return {"message": "Product created successfully", "product": product_doc}
+
+
+@app.put("/products/{product_id}")
+def update_product(product_id: str = Path(...), data: dict = Body(...), user: dict = Depends(current_user)):
+    require_role(user)
+    product = COLS["products"].find_one({"product_id": product_id})
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    fields = _product_fields(data, partial=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    if "product_name" in fields and _product_key(fields["product_name"]) != _product_key(product.get("product_name")):
+        # The demand model finds its products by name; a rename would drop this one from forecasts.
+        if ml._model_label(product.get("product_name")):
+            raise HTTPException(status_code=400, detail="The demand forecast uses this product's name, so it cannot be renamed")
+        duplicate = _same_name_product(fields["product_name"], exclude_id=product_id)
+        if duplicate:
+            raise HTTPException(status_code=409, detail=f"{fields['product_name']} already exists as {duplicate['product_id']}")
+    fields["updated_at"] = datetime.datetime.utcnow().isoformat()
+    updated = COLS["products"].find_one_and_update(
+        {"product_id": product_id}, {"$set": fields}, return_document=ReturnDocument.AFTER
+    )
+    updated["_id"] = str(updated["_id"])
+    COLS["logs"].insert_one({
+        "type": "activity",
+        "action": "update_product",
+        "product_id": product_id,
+        "message": f"Updated product {updated['product_name']}"
+    })
+    return {"message": "Product updated", "product": updated}
+
+
+@app.delete("/products/{product_id}")
+def delete_product(product_id: str = Path(...), user: dict = Depends(current_user)):
+    require_role(user)
+    product = COLS["products"].find_one({"product_id": product_id})
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    active = sum(1 for batch in COLS["batches"].find({
+        "product_id": product_id,
+        "status": {"$in": ["available", *HELD_STATUSES]},
+        "expired_at": {"$exists": False},
+    }) if _batch_remaining(batch) > 0)
+    if active:
+        raise HTTPException(status_code=409, detail=f"{product['product_name']} still has {active} active batch(es)")
+    COLS["products"].delete_one({"_id": product["_id"]})
+    COLS["logs"].insert_one({
+        "type": "activity",
+        "action": "delete_product",
+        "product_id": product_id,
+        "message": f"Removed product {product['product_name']}"
+    })
+    return {"message": "Product removed", "product_id": product_id}
 
 
 @app.get("/products")

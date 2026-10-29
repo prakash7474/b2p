@@ -349,6 +349,29 @@ button:disabled {
   margin-top: 14px;
 }
 
+.table-card-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 20px;
+}
+
+.table-card-title h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.secondary-btn.danger-btn {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.secondary-btn.danger-btn:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+
 .batch-group + .batch-group {
   margin-top: 20px;
 }

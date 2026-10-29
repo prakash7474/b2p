@@ -832,18 +832,55 @@ def test_vendor_sees_only_its_own_logs(client, seeded, no_auth_override):
     assert {log["vendor_id"] for log in body["logs"]} == {ACTIVE_VENDOR}
 
 
-@pytest.mark.xfail(strict=True, reason="catalog lock removed in 504b9c7")
-def test_catalog_only_takes_model_products_once(client, db):
-    body = client.post("/products", json={"product_id": "P003", "product_name": "Combo Pack",
-                                          "shelf_life_fridge_hrs": 54, "shelf_life_ambient_hrs": 18}).json()
-    assert (body["product"]["shelf_life_fridge_hrs"], body["product"]["shelf_life_ambient_hrs"]) == (54.0, 18.0)
-    # another spelling of the same product is a duplicate, and unknown products are refused
-    dup = client.post("/products", json={"product_id": "BATTER_P004", "product_name": "combo pack"}).json()
-    assert dup == {"error": "combo pack already exists as P003"}
-    rava = client.post("/products", json={"product_id": "P004", "product_name": "Rava Batter"}).json()
-    assert "Only Idli Batter, Dosa Batter and Combo Pack" in rava["error"]
-    bad = client.post("/products", json={"product_id": "P001", "product_name": "Idli Batter", "shelf_life_ambient_hrs": "soon"})
-    assert bad.json() == {"error": "shelf life hours must be numbers"}
+# ---------------------------------------------------------------------------
+# products: add / update / remove
+# ---------------------------------------------------------------------------
+
+NEW_PRODUCT = {"product_name": "Coconut Chutney", "category": "side", "shelf_life_fridge_hrs": 48,
+               "shelf_life_ambient_hrs": "8", "price": 40}
+
+
+def test_create_product_assigns_next_id_and_numbers(client, db):
+    db.products.insert_one({"product_id": "P001", "product_name": "Idli Batter"})
+    response = client.post("/products", json=NEW_PRODUCT)
+    assert response.status_code == 200
+    product = response.json()["product"]
+    assert product["product_id"] == "P002"
+    assert (product["shelf_life_ambient_hrs"], product["price"], product["unit_type"]) == (8.0, 40.0, "kg")
+
+
+def test_create_product_refuses_duplicates_and_bad_numbers(client, db):
+    db.products.insert_one({"product_id": "P001", "product_name": "Idli Batter"})
+    dup = client.post("/products", json={**NEW_PRODUCT, "product_name": "idly batter"})
+    assert (dup.status_code, dup.json()) == (409, {"error": "idly batter already exists as P001"})
+    bad = client.post("/products", json={**NEW_PRODUCT, "shelf_life_fridge_hrs": "soon"})
+    assert (bad.status_code, bad.json()) == (400, {"error": "shelf_life_fridge_hrs must be a number"})
+    missing = client.post("/products", json={"product_name": "Sambar"})
+    assert missing.status_code == 400
+
+
+def test_update_product_changes_metadata_but_not_model_names(client, db):
+    db.products.insert_many([{"product_id": "P001", "product_name": "Idli Batter", "price": 80},
+                             {"product_id": "P010", "product_name": "Sambar", "price": 30}])
+    response = client.put("/products/P001", json={"price": 90, "shelf_life_fridge_hrs": 70})
+    assert response.status_code == 200
+    assert db.products.find_one({"product_id": "P001"})["price"] == 90.0
+    renamed_model = client.put("/products/P001", json={"product_name": "Classic Idli"})
+    assert renamed_model.status_code == 400
+    renamed = client.put("/products/P010", json={"product_name": "Tiffin Sambar"})
+    assert renamed.json()["product"]["product_name"] == "Tiffin Sambar"
+    assert client.put("/products/P999", json={"price": 1}).status_code == 404
+
+
+def test_delete_product_refuses_while_batches_are_active(client, db):
+    db.products.insert_one({"product_id": "P010", "product_name": "Sambar"})
+    db.batches.insert_one({"batch_id": "B1", "product_id": "P010", "status": "available",
+                           "volume_kg": 5, "remaining_kg": 5})
+    blocked = client.delete("/products/P010")
+    assert blocked.status_code == 409
+    db.batches.update_one({"batch_id": "B1"}, {"$set": {"status": "returned"}})
+    assert client.delete("/products/P010").status_code == 200
+    assert db.products.count_documents({}) == 0
 
 
 @pytest.mark.xfail(strict=True, reason="inventory-alert routes and auto-resolve removed in 504b9c7")

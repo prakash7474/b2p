@@ -22,7 +22,10 @@ import {
   EyeOff,
   Boxes,
   CalendarDays,
-  LogOut
+  LogOut,
+  Pencil,
+  Plus,
+  Trash2
 } from "lucide-react";
 
 import "./App.css";
@@ -166,17 +169,17 @@ function Sidebar({ page, setPage, open, setOpen, demands }) {
       links: [["dashboard", "Dashboard", LayoutDashboard]]
     },
     {
-      title: "Management",
+      title: "Vendors & Products",
       links: [
         ["vendors", "Vendors", Store],
         ["products", "Products", Package],
-        ["batches", "Batches", Boxes],
         ["inventory", "Inventory", Warehouse]
       ]
     },
     {
-      title: "Operations",
+      title: "Batch Management",
       links: [
+        ["batches", "Batches", Boxes],
         ["demands", "Batch Requests", FileText]
       ]
     },
@@ -1486,41 +1489,192 @@ function Login({ onLogin }) {
 
 // The catalog is fixed to the three products the demand model was trained on,
 // so this page only shows them; batches are created from these on the Batches page.
-function Products({ products, search, setSearch }) {
+const EMPTY_PRODUCT = {
+  product_name: "",
+  category: "",
+  unit_type: "kg",
+  shelf_life_fridge_hrs: "",
+  shelf_life_ambient_hrs: "",
+  price: ""
+};
+
+function Products({ products, search, setSearch, refresh }) {
+  const [form, setForm] = useState(EMPTY_PRODUCT);
+  // product_id of the product being edited; "" means the form adds a new one.
+  const [editing, setEditing] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const update = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
+
+  const startEdit = (product) => {
+    setEditing(product.product_id);
+    setForm({
+      product_name: product.product_name || "",
+      category: product.category || "",
+      unit_type: getValue(product, ["unit_type", "unit"], "kg"),
+      shelf_life_fridge_hrs: String(getValue(product, ["shelf_life_fridge_hrs", "shelf_life_hours"], "")),
+      shelf_life_ambient_hrs: String(getValue(product, ["shelf_life_ambient_hrs"], "")),
+      price: String(getValue(product, ["price"], ""))
+    });
+    setMessage("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const cancelEdit = () => {
+    setEditing("");
+    setForm(EMPTY_PRODUCT);
+  };
+
+  const save = async () => {
+    if (!form.product_name.trim() || !form.shelf_life_fridge_hrs || !form.shelf_life_ambient_hrs) {
+      setMessage("Enter a name and both shelf lives.");
+      return;
+    }
+    const body = { ...form };
+    if (body.price === "") delete body.price;
+
+    try {
+      setBusy(true);
+      const data = await request(editing ? `/products/${editing}` : "/products", {
+        method: editing ? "PUT" : "POST",
+        body: JSON.stringify(body)
+      });
+      setMessage(data.error || `${form.product_name} ${editing ? "updated" : "added"}.`);
+      cancelEdit();
+      await refresh();
+    } catch (error) {
+      setMessage(error.message || "Unable to save product.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (product) => {
+    if (!window.confirm(`Remove ${product.product_name}? Vendors will no longer see it.`)) return;
+    try {
+      setBusy(true);
+      const data = await request(`/products/${product.product_id}`, { method: "DELETE" });
+      setMessage(data.error || `${product.product_name} removed.`);
+      if (editing === product.product_id) cancelEdit();
+      await refresh();
+    } catch (error) {
+      setMessage(error.message || "Unable to remove product.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const filtered = products.filter((product) =>
-    JSON.stringify(product).toLowerCase().includes(search.toLowerCase())
+    [product.product_name, product.category].join(" ").toLowerCase().includes(search.toLowerCase())
   );
 
   return (
     <PageLayout
       title="Products"
-      subtitle="Idli, Dosa and Combo: the products the forecast model knows. Shelf life sets batch expiry."
+      subtitle="Everything you sell. Shelf life sets batch expiry; the price is what customers pay."
       search={search}
       setSearch={setSearch}
     >
+      {message && (
+        <div className="alert alert-warning">
+          <AlertTriangle size={16} />
+          {message}
+        </div>
+      )}
+
+      <div className="form-card">
+        <div className="form-card-title">
+          <h3>{editing ? `Edit ${products.find((p) => p.product_id === editing)?.product_name || "product"}` : "Add Product"}</h3>
+          <p>
+            Batters, sides like chutney or sambar, combos. The demand forecast covers Idli, Dosa
+            and Combo only; other products get spoilage tracking but no forecast yet.
+          </p>
+        </div>
+
+        <div className="form-grid">
+          <FormField label="Name">
+            <input value={form.product_name} placeholder="Coconut Chutney"
+              onChange={(e) => update("product_name", e.target.value)} />
+          </FormField>
+          <FormField label="Category">
+            <input value={form.category} placeholder="batter, side, combo"
+              onChange={(e) => update("category", e.target.value)} />
+          </FormField>
+          <FormField label="Unit">
+            <select value={form.unit_type} onChange={(e) => update("unit_type", e.target.value)}>
+              <option value="kg">kg</option>
+              <option value="litre">litre</option>
+              <option value="pack">pack</option>
+            </select>
+          </FormField>
+          <FormField label="Price (₹ per unit)">
+            <input type="number" min="0" value={form.price}
+              onChange={(e) => update("price", e.target.value)} />
+          </FormField>
+          <FormField label="Fridge shelf life (hours)">
+            <input type="number" min="1" value={form.shelf_life_fridge_hrs}
+              onChange={(e) => update("shelf_life_fridge_hrs", e.target.value)} />
+          </FormField>
+          <FormField label="Room shelf life (hours)">
+            <input type="number" min="1" value={form.shelf_life_ambient_hrs}
+              onChange={(e) => update("shelf_life_ambient_hrs", e.target.value)} />
+          </FormField>
+        </div>
+
+        <div className="form-actions">
+          {editing && (
+            <button className="secondary-btn" onClick={cancelEdit} disabled={busy}>
+              <X size={15} />
+              Cancel
+            </button>
+          )}
+          <button className="primary-btn" onClick={save} disabled={busy}>
+            {editing ? <CheckCircle2 size={15} /> : <Plus size={15} />}
+            {editing ? "Save Changes" : "Add Product"}
+          </button>
+        </div>
+      </div>
 
       <div className="table-card">
         <div className="table-wrapper">
           <table>
             <thead>
               <tr>
-                <th>Product ID</th>
                 <th>Name</th>
                 <th>Category</th>
+                <th>Price</th>
                 <th>Fridge shelf life</th>
                 <th>Room shelf life</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((product, index) => (
-                <tr key={product._id || index}>
-                  <td><strong>{product.product_id}</strong></td>
-                  <td>{product.product_name}</td>
-                  <td>{product.category || "-"}</td>
-                  <td>{getValue(product, ["shelf_life_fridge_hrs", "shelf_life_hours"], "-")} h</td>
-                  <td>{getValue(product, ["shelf_life_ambient_hrs"], "-")} h</td>
-                </tr>
-              ))}
+              {filtered.map((product, index) => {
+                const unit = getValue(product, ["unit_type", "unit"], "kg");
+                const price = getValue(product, ["price"], "");
+                return (
+                  <tr key={product._id || index}>
+                    <td><strong>{product.product_name}</strong></td>
+                    <td>{product.category ? formatStatus(product.category) : "-"}</td>
+                    <td>{price === "" ? "-" : `₹${price} / ${unit}`}</td>
+                    <td>{getValue(product, ["shelf_life_fridge_hrs", "shelf_life_hours"], "-")} h</td>
+                    <td>{getValue(product, ["shelf_life_ambient_hrs"], "-")} h</td>
+                    <td>
+                      <div className="action-buttons">
+                        <button className="secondary-btn small-btn" disabled={busy} onClick={() => startEdit(product)}>
+                          <Pencil size={13} />
+                          Edit
+                        </button>
+                        <button className="secondary-btn small-btn danger-btn" disabled={busy} onClick={() => remove(product)}>
+                          <Trash2 size={13} />
+                          Remove
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {filtered.length === 0 && <div className="empty-state">No products found.</div>}
@@ -1547,6 +1701,8 @@ function useList(url, key) {
   return { items, reload: () => setVersion((v) => v + 1), message, setMessage };
 }
 
+const UPCOMING_DAYS = 60;
+
 function Festivals({ search, setSearch }) {
   const { items: festivals, reload, message, setMessage } = useList("/festival-calendar", "festivals");
   const empty = { date: "", festivalType: "publicHoliday", windowDays: "1", festivalName: "", region: "Tamil Nadu" };
@@ -1571,7 +1727,21 @@ function Festivals({ search, setSearch }) {
     }
   };
 
-  const filtered = festivals.filter((festival) => JSON.stringify(festival).toLowerCase().includes(search.toLowerCase()));
+  const [showAll, setShowAll] = useState(false);
+
+  // Dates are "YYYY-MM-DD..." strings, so plain string comparison orders them.
+  const dayOf = (date) => new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  const today = dayOf(new Date());
+  const horizon = dayOf(new Date(Date.now() + UPCOMING_DAYS * 86400000));
+  const sorted = [...festivals].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const upcoming = sorted.filter((f) => {
+    const day = String(f.date || "").slice(0, 10);
+    return day >= today && day <= horizon;
+  });
+  // A search always looks through every festival.
+  const listed = search
+    ? sorted.filter((f) => [f.festivalName, f.festivalType, f.region].join(" ").toLowerCase().includes(search.toLowerCase()))
+    : showAll ? sorted : upcoming;
 
   return (
     <PageLayout title="Festival Calendar" subtitle="Festival windows raise the demand forecast" search={search} setSearch={setSearch}>
@@ -1616,6 +1786,14 @@ function Festivals({ search, setSearch }) {
       </div>
 
       <div className="table-card">
+        <div className="table-card-title">
+          <h3>{search ? "Search results" : showAll ? "All festivals" : "Coming up in the next two months"}</h3>
+          {!search && (
+            <button className="secondary-btn small-btn" onClick={() => setShowAll((v) => !v)}>
+              {showAll ? "Show upcoming only" : `View all ${festivals.length}`}
+            </button>
+          )}
+        </div>
         <div className="table-wrapper">
           <table>
             <thead>
@@ -1628,7 +1806,7 @@ function Festivals({ search, setSearch }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((festival, index) => (
+              {listed.map((festival, index) => (
                 <tr key={festival._id || index}>
                   <td>{festival.date ? parseServerDate(festival.date).toLocaleDateString() : "-"}</td>
                   <td><strong>{festival.festivalName || "-"}</strong></td>
@@ -1639,7 +1817,11 @@ function Festivals({ search, setSearch }) {
               ))}
             </tbody>
           </table>
-          {filtered.length === 0 && <div className="empty-state">No festivals saved.</div>}
+          {listed.length === 0 && (
+            <div className="empty-state">
+              {festivals.length === 0 ? "No festivals saved." : search ? "No festivals match." : "No festivals in the next two months."}
+            </div>
+          )}
         </div>
       </div>
     </PageLayout>
@@ -1821,7 +2003,7 @@ function App() {
           )}
 
           {page === "products" && (
-            <Products products={products} search={search} setSearch={setSearch} />
+            <Products products={products} search={search} setSearch={setSearch} refresh={loadData} />
           )}
 
           {page === "festivals" && <Festivals search={search} setSearch={setSearch} />}
