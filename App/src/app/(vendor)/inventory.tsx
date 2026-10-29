@@ -1,14 +1,15 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { Card, EmptyState, StatCard, StatGrid } from "@/src/components/cards";
 import { Button, FieldInput, SecondaryButton } from "@/src/components/controls";
 import { LoadingScreen, Screen } from "@/src/components/layout";
-import { AlertBox, BarMeter, StatusPill } from "@/src/components/status";
+import { AlertBox, BarMeter } from "@/src/components/status";
 import { api, type VendorBatch } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
-import { colors, fonts, riskColor } from "@/src/theme";
+import { colors, fonts, radius } from "@/src/theme";
 
 type Notice = { type: "success" | "error"; text: string } | null;
 
@@ -99,6 +100,10 @@ export default function BatchesScreen() {
   const inStore = all.filter((batch) => batch.status !== "assigned" && !batch.expired);
   const expired = all.filter((batch) => batch.expired);
   const low = inStore.filter((batch) => batch.low_stock);
+  const atRisk = all.filter((batch) => batch.expired || batch.risk_label === "High");
+  const heldKg = all
+    .filter((batch) => !batch.expired)
+    .reduce((sum, b) => sum + Number(b.remaining_kg ?? 0), 0);
   const refresh = () => {
     setRefreshing(true);
     void load();
@@ -123,44 +128,51 @@ export default function BatchesScreen() {
     >
       {notice ? <AlertBox type={notice.type} message={notice.text} /> : null}
 
-      {expired.map((batch) => (
+      {expired.length > 0 ? (
         <AlertBox
-          key={`expired-${batch.batch_id}`}
           type="error"
-          message={`Batch ${batch.batch_id} (${batch.product_name}) has expired: ${batch.remaining_kg} kg can no longer be sold. Return it.`}
+          message={`${expired.length} batch${expired.length === 1 ? " has" : "es have"} expired (${expired
+            .map((b) => b.product_name)
+            .join(", ")}). They can no longer be sold; return them below.`}
         />
-      ))}
-
-      {low.map((batch) => (
-        <AlertBox
-          key={`alert-${batch.batch_id}`}
-          type="error"
-          message={`Batch ${batch.batch_id} (${batch.product_name}) is low: ${batch.remaining_kg} kg left, threshold ${batch.threshold_kg} kg.`}
-        />
-      ))}
+      ) : null}
 
       <StatGrid>
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="package-variant" size={18} color={color} />}
-          label="Batches Held"
-          value={inStore.length}
-          sub={`${inStore.reduce((sum, b) => sum + Number(b.remaining_kg ?? 0), 0).toFixed(1)} kg`}
+          label="Total batches"
+          value={all.length}
+          sub={`${heldKg.toFixed(1)} kg good stock`}
+        />
+        <StatCard
+          icon={(color) => <MaterialCommunityIcons name="alert-octagon-outline" size={18} color={color} />}
+          label="At risk"
+          value={atRisk.length}
+          sub={atRisk.length > 0 ? "high spoilage risk or expired" : "none"}
+          tone={atRisk.length > 0 ? "danger" : "success"}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="alert-decagram-outline" size={18} color={color} />}
-          label="Below Threshold"
+          label="Below threshold"
           value={low.length}
-          sub={low.length > 0 ? "request a batch" : "all healthy"}
-          tone={low.length > 0 ? "danger" : "success"}
+          sub={low.length > 0 ? "running low" : "all healthy"}
+          tone={low.length > 0 ? "warning" : "success"}
         />
       </StatGrid>
+
+      <Button
+        label="Request Batches"
+        full
+        icon={<MaterialCommunityIcons name="truck-delivery-outline" size={18} color={colors.primary} />}
+        onPress={() => router.push("/(vendor)/request-batches")}
+      />
 
       <Card>
         {all.length === 0 ? (
           <EmptyState
             icon={<MaterialCommunityIcons name="package-variant" size={26} color={colors.muted} />}
-            title="No batches assigned"
-            text="Request batches from the Forecast tab. Assigned batches appear here."
+            title="No batches yet"
+            text="Tap Request Batches above. Batches the admin assigns to you appear here."
           />
         ) : (
           all.map((batch, index) => {
@@ -168,43 +180,38 @@ export default function BatchesScreen() {
             const remaining = Number(batch.remaining_kg ?? 0);
             const volume = Number(batch.volume_kg ?? remaining) || 1;
             const assigned = batch.status === "assigned";
-            const label = String(batch.risk_label ?? "");
+            const hoursLeft = Number(batch.hours_to_expiry ?? 0);
 
             return (
               <View key={id} style={[styles.row, index === all.length - 1 && styles.rowLast]}>
                 <View style={styles.header}>
                   <View style={styles.headerText}>
                     <Text style={styles.title}>{String(batch.product_name ?? "Batch")}</Text>
-                    <Text style={styles.meta}>Batch {id}</Text>
+                    <Text style={styles.meta}>
+                      {assigned
+                        ? "On its way: confirm when it arrives"
+                        : batch.expired
+                          ? "Expired"
+                          : `${Math.round(hoursLeft)} h of shelf life left`}
+                    </Text>
                   </View>
-                  <StatusPill
-                    status={assigned ? "pending" : batch.expired ? "rejected" : "active"}
-                    label={assigned ? "Awaiting your confirmation" : batch.expired ? "Expired" : "In store"}
-                  />
+                  {batch.expired ? (
+                    <RiskBadge label="Expired" />
+                  ) : batch.risk_label ? (
+                    <RiskBadge label={batch.risk_label} />
+                  ) : null}
                 </View>
 
                 <BarMeter
-                  label="Remaining"
+                  label={batch.low_stock && !assigned ? "Remaining · low" : "Remaining"}
                   value={`${remaining} / ${volume} kg`}
                   percent={(remaining / volume) * 100}
                   color={batch.low_stock ? colors.danger : colors.primary}
                 />
-                <Text style={styles.meta}>Alert threshold {Number(batch.threshold_kg ?? 0)} kg</Text>
-
-                {batch.action ? <Text style={styles.meta}>{batch.action}</Text> : null}
-
-                {batch.risk_score !== undefined ? (
-                  <BarMeter
-                    label={`Spoilage risk · ${label}`}
-                    value={`${Number(batch.risk_score).toFixed(1)}%`}
-                    percent={Number(batch.risk_score)}
-                    color={riskColor(label)}
-                  />
-                ) : null}
 
                 {assigned ? (
                   <Button
-                    label="Confirm"
+                    label="Confirm received"
                     compact
                     loading={busyId === id}
                     icon={<MaterialCommunityIcons name="check-circle-outline" size={18} color={colors.primary} />}
@@ -217,7 +224,7 @@ export default function BatchesScreen() {
                     tone="danger"
                     compact
                     loading={busyId === id}
-                    icon={<MaterialCommunityIcons name="keyboard-return" size={13} color={colors.danger} />}
+                    icon={<MaterialCommunityIcons name="keyboard-return" size={18} color={colors.danger} />}
                     onPress={() => void sendBack(batch)}
                   />
                 ) : (
@@ -228,13 +235,14 @@ export default function BatchesScreen() {
                         onChangeText={(text) => setSaleKg((prev) => ({ ...prev, [id]: text }))}
                         placeholder="kg sold"
                         keyboardType="decimal-pad"
+                        accessibilityLabel={`Kilograms of ${batch.product_name} sold`}
                       />
                     </View>
                     <SecondaryButton
                       label="Record sale"
                       compact
                       loading={busyId === id}
-                      icon={<MaterialCommunityIcons name="cart-minus" size={13} color={colors.text} />}
+                      icon={<MaterialCommunityIcons name="cart-minus" size={18} color={colors.text} />}
                       onPress={() => void sell(id)}
                     />
                   </View>
@@ -248,11 +256,33 @@ export default function BatchesScreen() {
   );
 }
 
+const RISK_BADGES: Record<string, { label: string; fg: string; bg: string }> = {
+  High: { label: "High risk", fg: "#fff", bg: colors.danger },
+  Expired: { label: "Expired", fg: "#fff", bg: colors.danger },
+  Medium: { label: "Medium risk", fg: colors.warning, bg: colors.butter },
+  Low: { label: "Low risk", fg: colors.primary, bg: colors.successBg },
+};
+
+/** Spoilage risk as a filled badge, so a risky batch stands out at a glance. */
+function RiskBadge({ label }: { label: string }) {
+  const badge = RISK_BADGES[label] ?? RISK_BADGES.Low;
+  return (
+    <View style={[styles.badge, { backgroundColor: badge.bg }]}>
+      <MaterialCommunityIcons
+        name={label === "Low" ? "shield-check-outline" : "alert-octagon-outline"}
+        size={15}
+        color={badge.fg}
+      />
+      <Text style={[styles.badgeText, { color: badge.fg }]}>{badge.label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   row: {
-    padding: 15,
-    gap: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    padding: 16,
+    gap: 12,
+    borderBottomWidth: 1,
     borderBottomColor: colors.line,
   },
   rowLast: {
@@ -263,15 +293,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    marginBottom: 4,
   },
   headerText: {
     flex: 1,
     gap: 3,
   },
   title: {
-    fontSize: 14,
-    fontWeight: "700",
+    fontSize: 17,
     fontFamily: fonts.bold,
     color: colors.text,
   },
@@ -279,6 +307,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
+  },
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+  },
+  badgeText: {
+    fontSize: 13,
+    fontFamily: fonts.bold,
   },
   saleRow: {
     flexDirection: "row",

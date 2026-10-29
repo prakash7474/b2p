@@ -6,8 +6,8 @@ import { StyleSheet, Text, View } from "react-native";
 import { Card, EmptyState, SectionTitle, StatCard, StatGrid } from "@/src/components/cards";
 import { Button, SecondaryButton } from "@/src/components/controls";
 import { LoadingScreen, Screen } from "@/src/components/layout";
-import { AlertBox, BarMeter, StatusPill } from "@/src/components/status";
-import { api, parseServerDate, type BatchChip, type ForecastItem, type ForecastSummary } from "@/src/lib/api";
+import { AlertBox, StatusPill } from "@/src/components/status";
+import { api, type ForecastItem, type ForecastSummary } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
 import { colors, fonts } from "@/src/theme";
 
@@ -57,7 +57,7 @@ export default function ForecastScreen() {
       setBusyBatch(batchId);
       setError("");
       const result = await api.requestBatch(vendorId, batchId);
-      setNote(result.message ?? `Requested ${batchId}.`);
+      setNote(result.message ?? "Batch requested.");
       await load();
     } catch (caught) {
       setError(messageOf(caught));
@@ -71,15 +71,7 @@ export default function ForecastScreen() {
   }
 
   const items = forecast ?? [];
-
-  const chartMax = Math.max(
-    1,
-    ...items.flatMap((item) => [
-      Number(item.predicted_demand ?? 0),
-      Number(item.recommended_stock ?? 0),
-      Number(item.current_stock ?? 0),
-    ]),
-  );
+  const kg = (value: unknown) => `${Number(Number(value ?? 0).toFixed(1))} kg`;
 
   return (
     <Screen
@@ -145,361 +137,140 @@ export default function ForecastScreen() {
           />
         </Card>
       ) : (
-        <>
-          <View>
-            <SectionTitle
-              title="Demand vs Recommended Stock vs Inventory"
-              subtitle="Comparison across active product classes"
-            />
-            <Card style={styles.chartCard}>
-              <View style={styles.legend}>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: colors.primary }]} />
-                  <Text style={styles.legendText}>Demand</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: colors.warning }]} />
-                  <Text style={styles.legendText}>Rec. Stock (Demand + Safety)</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: colors.sidebar }]} />
-                  <Text style={styles.legendText}>Current Stock</Text>
-                </View>
-              </View>
+        <View>
+          <SectionTitle
+            title="By Product"
+            subtitle="Restock = demand + safety stock − your stock − already requested"
+          />
+          <Card>
+            {items.map((item, index) => {
+              const refill = Number(item.refill_quantity ?? 0);
+              const restock = Boolean(item.restock_needed);
+              const requested = Number(item.requested_kg ?? 0);
+              const suggested = item.suggested_batches ?? [];
+              const uncovered = Number(item.uncovered_kg ?? 0);
 
-              {items.map((item, index) => {
-                const demand = Number(item.predicted_demand ?? 0);
-                const recStock = Number(item.recommended_stock ?? 0);
-                const stock = Number(item.current_stock ?? 0);
-
-                return (
-                  <View
-                    key={String(item.product_name ?? index)}
-                    style={[
-                      styles.chartRow,
-                      index === items.length - 1 && styles.chartRowLast,
-                    ]}
-                  >
-                    <Text style={styles.chartProduct} numberOfLines={1}>
-                      {String(item.product_name ?? "Product")}
-                    </Text>
-                    <BarMeter
-                      label="Demand"
-                      value={demand.toFixed(1)}
-                      percent={(demand / chartMax) * 100}
-                      color={colors.primary}
-                    />
-                    <BarMeter
-                      label="Rec. Stock"
-                      value={recStock.toFixed(1)}
-                      percent={(recStock / chartMax) * 100}
-                      color={colors.warning}
-                    />
-                    <BarMeter
-                      label="Current Stock"
-                      value={stock.toFixed(1)}
-                      percent={(stock / chartMax) * 100}
-                      color={colors.sidebar}
-                    />
+              return (
+                <View
+                  key={String(item.product_name ?? index)}
+                  style={[styles.row, index === items.length - 1 && styles.rowLast]}
+                >
+                  <View style={styles.rowHeader}>
+                    <Text style={styles.product}>{String(item.product_name ?? "Product")}</Text>
+                    <StatusPill status={restock ? "high" : "active"} label={String(item.status ?? "")} />
                   </View>
-                );
-              })}
-            </Card>
-          </View>
 
-          <View>
-            <SectionTitle
-              title="Demand & Refill"
-              subtitle="Restock = demand + safety stock − sellable stock − already requested"
-            />
-            <Card>
-              {items.map((item, index) => {
-                const demand = Number(item.predicted_demand ?? 0);
-                const safety = Number(item.safety_stock ?? 0);
-                const current = Number(item.current_stock ?? 0);
-                const requested = Number(item.requested_kg ?? 0);
-                const refill = Number(item.refill_quantity ?? 0);
-                const restock = Boolean(item.restock_needed);
-                const suggested = item.suggested_batches ?? [];
-                const uncovered = Number(item.uncovered_kg ?? 0);
+                  {/* One line of numbers per product: what sells, the buffer, what you hold, what to order. */}
+                  <View style={styles.stats}>
+                    <Stat label="Demand" value={kg(item.predicted_demand)} />
+                    <Stat label="Safety stock" value={kg(item.safety_stock)} />
+                    <Stat label={requested ? "Stock + requested" : "Your stock"}
+                      value={kg(Number(item.current_stock ?? 0) + requested)} />
+                    <Stat label="Restock" value={kg(refill)} tone={restock ? "danger" : "success"} />
+                  </View>
 
-                return (
-                  <View
-                    key={String(item.product_name ?? index)}
-                    style={[
-                      styles.detailRow,
-                      index === items.length - 1 && styles.chartRowLast,
-                    ]}
-                  >
-                    <View style={styles.detailHeader}>
-                      <Text style={styles.detailProduct}>
-                        {String(item.product_name ?? "Product")}
+                  {suggested.map((batch) => (
+                    <View key={String(batch.batch_id)} style={styles.suggestRow}>
+                      <Text style={styles.suggestText}>
+                        Available: {kg(batch.remaining_kg)}
+                        {batch.hours_to_expiry !== undefined
+                          ? `, ${Math.round(Number(batch.hours_to_expiry))} h shelf life left`
+                          : ""}
                       </Text>
-                      <StatusPill status={restock ? "high" : "active"} label={String(item.status ?? "")} />
-                    </View>
-
-                    <View style={styles.metrics}>
-                      <Metric label="Demand" value={demand} />
-                      <Metric label="Safety Stock" value={safety} />
-                      <Metric label="Rec. Stock" value={Number(item.recommended_stock ?? 0)} highlight />
-                      <Metric label="Current" value={current} />
-                    </View>
-
-                    <View style={[styles.mismatchAlert, restock ? styles.mismatchDeficit : styles.mismatchBalanced]}>
-                      <MaterialCommunityIcons
-                        name={restock ? "alert-circle-outline" : "check-circle-outline"}
-                        size={15}
-                        color={restock ? colors.danger : colors.success}
+                      <SecondaryButton
+                        label="Request"
+                        compact
+                        loading={busyBatch === batch.batch_id}
+                        onPress={() => void requestSuggested(String(batch.batch_id))}
                       />
-                      <Text style={[styles.mismatchText, { color: restock ? colors.danger : colors.success }]}>
-                        {restock
-                          ? `Restock ${refill} kg = demand ${demand} + safety ${safety} − stock ${current}${requested ? ` − requested ${requested}` : ""}.`
-                          : `Stock ${current} kg${requested ? ` + requested ${requested} kg` : ""} covers demand ${demand} kg plus ${safety} kg safety stock.`}
-                      </Text>
                     </View>
-
-                    {item.history_source === "baseline" ? (
-                      <Text style={styles.coldStart}>
-                        No sales here yet: baseline for a shop like yours (location, weather, festivals). It adapts after a week of sales.
-                      </Text>
-                    ) : null}
-
-                    {suggested.length > 0 ? (
-                      <View style={styles.suggestions}>
-                        <Text style={styles.suggestTitle}>Batches that cover this restock</Text>
-                        {suggested.map((batch) => (
-                          <View key={String(batch.batch_id)} style={styles.suggestRow}>
-                            <Text style={styles.suggestText}>
-                              {String(batch.batch_id)} · {Number(batch.remaining_kg ?? 0)} kg
-                              {batch.hours_to_expiry !== undefined ? ` · ${Math.round(Number(batch.hours_to_expiry))} h shelf life left` : ""}
-                            </Text>
-                            <SecondaryButton
-                              label="Request"
-                              compact
-                              loading={busyBatch === batch.batch_id}
-                              onPress={() => void requestSuggested(String(batch.batch_id))}
-                            />
-                          </View>
-                        ))}
-                      </View>
-                    ) : null}
-                    {restock && uncovered > 0 ? (
-                      <Text style={styles.coldStart}>
-                        {uncovered} kg has no available batch yet: the manufacturer needs to make more.
-                      </Text>
-                    ) : null}
-
-                    <View style={styles.chips}>
-                      {(item.batches ?? []).map((batch) => (
-                        <BatchChipView key={String(batch.batch_id)} batch={batch} />
-                      ))}
-                    </View>
-                  </View>
-                );
-              })}
-            </Card>
-          </View>
-        </>
+                  ))}
+                  {restock && uncovered > 0 ? (
+                    <Text style={styles.note}>
+                      {kg(uncovered)} has no batch available yet; the manufacturer will make more.
+                    </Text>
+                  ) : null}
+                </View>
+              );
+            })}
+          </Card>
+        </View>
       )}
     </Screen>
   );
 }
 
-function BatchChipView({ batch }: { batch: BatchChip }) {
-  const when = batch.received_at ? parseServerDate(batch.received_at) : null;
+function Stat({ label, value, tone }: { label: string; value: string; tone?: "danger" | "success" }) {
   return (
-    <View style={styles.chip}>
-      <Text style={styles.chipId}>{String(batch.batch_id ?? "batch")}</Text>
-      <Text style={styles.chipMeta}>
-        {Number(batch.remaining_kg ?? 0)} kg
-        {when && !Number.isNaN(when.getTime()) ? ` · ${when.toLocaleDateString()}` : ""}
-        {batch.expired ? " · expired" : ""}
-      </Text>
-    </View>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  highlight = false,
-}: {
-  label: string;
-  value: number;
-  highlight?: boolean;
-}) {
-  return (
-    <View style={styles.metric}>
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={[styles.metricValue, highlight && styles.metricValueHighlight]}>
-        {Number(value).toFixed(Number(value) % 1 === 0 ? 0 : 1)}
+    <View style={styles.stat}>
+      <Text style={styles.statLabel}>{label}</Text>
+      <Text style={[styles.statValue, tone && { color: tone === "danger" ? colors.danger : colors.success }]}>
+        {value}
       </Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  chartCard: {
+  row: {
     padding: 16,
-  },
-  legend: {
-    flexDirection: "row",
-    gap: 16,
-    marginBottom: 14,
-  },
-  legendItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  legendDot: {
-    width: 9,
-    height: 9,
-    borderRadius: 3,
-  },
-  legendText: {
-    fontSize: 13,
-    color: colors.muted,
-    fontFamily: fonts.regular,
-  },
-  chartRow: {
-    paddingBottom: 14,
-    marginBottom: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 12,
+    borderBottomWidth: 1,
     borderBottomColor: colors.line,
   },
-  chartRowLast: {
+  rowLast: {
     borderBottomWidth: 0,
-    marginBottom: 0,
-    paddingBottom: 0,
   },
-  chartProduct: {
-    fontSize: 14,
-    fontWeight: "600",
-    fontFamily: fonts.semibold,
-    color: colors.text,
-    marginBottom: 8,
-  },
-  detailRow: {
-    padding: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.line,
-    gap: 10,
-  },
-  detailHeader: {
+  rowHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
   },
-  detailProduct: {
-    fontSize: 14,
-    fontWeight: "700",
+  product: {
+    flex: 1,
+    fontSize: 17,
     fontFamily: fonts.bold,
     color: colors.text,
-    flexShrink: 1,
   },
-  metrics: {
+  stats: {
     flexDirection: "row",
-    gap: 8,
+    flexWrap: "wrap",
+    rowGap: 10,
   },
-  metric: {
-    flex: 1,
-    backgroundColor: colors.tableHeader,
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 9,
-    gap: 3,
+  stat: {
+    flexBasis: "50%",
+    gap: 2,
   },
-  metricLabel: {
+  statLabel: {
     fontSize: 12,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
     color: colors.muted,
-    fontFamily: fonts.regular,
-  },
-  metricValue: {
-    fontSize: 15,
-    fontWeight: "600",
-    fontFamily: fonts.semibold,
-    color: colors.text,
-  },
-  metricValueHighlight: {
-    color: colors.primaryDark,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-  },
-  mismatchAlert: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderWidth: 1,
-  },
-  mismatchDeficit: {
-    backgroundColor: colors.dangerBg,
-    borderColor: colors.danger,
-  },
-  mismatchText: {
-    fontSize: 13,
     fontFamily: fonts.medium,
-    flex: 1,
-    lineHeight: 15,
   },
-  mismatchBalanced: {
-    backgroundColor: colors.successBg,
-    borderColor: colors.success,
-  },
-  coldStart: {
-    fontSize: 13,
-    color: colors.muted,
-    fontFamily: fonts.regular,
-  },
-  suggestions: {
-    gap: 6,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.line,
-    paddingTop: 8,
-  },
-  suggestTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
+  statValue: {
+    fontSize: 17,
     color: colors.text,
+    fontFamily: fonts.bold,
   },
   suggestRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
   },
   suggestText: {
-    fontSize: 13,
-    color: colors.muted,
-    fontFamily: fonts.regular,
     flex: 1,
+    fontSize: 14,
+    color: colors.text,
+    fontFamily: fonts.regular,
   },
-  chips: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-  },
-  chip: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.primaryLight,
-    borderRadius: 14,
-    paddingVertical: 4,
-    paddingHorizontal: 9,
-  },
-  chipId: {
+  note: {
     fontSize: 13,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-    color: colors.primaryDark,
-  },
-  chipMeta: {
-    fontSize: 12,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
