@@ -624,7 +624,7 @@ function Vendors({ vendors, search, setSearch, refresh }) {
 const ALERT_CLASSES = { danger: "alert alert-error", warning: "alert alert-warning", info: "alert alert-info" };
 
 function Inventory({ search, setSearch }) {
-  const { items: shops, reload, message } = useList("/shop-stock", "shops");
+  const { items: shops, loaded, reload, message } = useList("/shop-stock", "shops");
   const [attentionOnly, setAttentionOnly] = useState(false);
 
   const query = search.toLowerCase();
@@ -642,9 +642,9 @@ function Inventory({ search, setSearch }) {
       setSearch={setSearch}
     >
       {message && (
-        <div className="alert alert-warning">
+        <div className="alert alert-error">
           <AlertTriangle size={16} />
-          {message}
+          Could not load shop stock: {message}
         </div>
       )}
 
@@ -660,9 +660,11 @@ function Inventory({ search, setSearch }) {
         </button>
       </div>
 
-      {listed.length === 0 && (
+      {listed.length === 0 && !message && (
         <div className="table-card">
-          <div className="empty-state">{attentionOnly ? "No shop needs attention right now." : "No shops found."}</div>
+          <div className="empty-state">
+            {!loaded ? "Loading shop stock..." : attentionOnly ? "No shop needs attention right now." : "No shops found."}
+          </div>
         </div>
       )}
 
@@ -1803,16 +1805,18 @@ function useList(url, key) {
   const [items, setItems] = useState([]);
   const [message, setMessage] = useState("");
   const [version, setVersion] = useState(0);
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     let live = true;
     request(url)
       .then((data) => live && setItems(data[key] || []))
-      .catch((error) => live && setMessage(error.message || "Unable to load."));
+      .catch((error) => live && setMessage(error.message || "Unable to load."))
+      .finally(() => live && setLoaded(true));
     return () => {
       live = false;
     };
   }, [url, key, version]);
-  return { items, reload: () => setVersion((v) => v + 1), message, setMessage };
+  return { items, loaded, reload: () => setVersion((v) => v + 1), message, setMessage };
 }
 
 const UPCOMING_DAYS = 60;
