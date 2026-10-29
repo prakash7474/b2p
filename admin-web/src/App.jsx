@@ -77,6 +77,23 @@ const formatDate = (value) => {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 };
 
+// Batches still in play: not expired, returned or sold out.
+const ACTIVE_BATCH_STATUSES = ["available", "assigned", "received", "active"];
+const isActiveBatch = (batch) =>
+  ACTIVE_BATCH_STATUSES.includes(batch.status) && !batch.expired_at && Number(batch.remaining_kg) > 0;
+
+const BATCH_STATUS_LABELS = {
+  available: "Unassigned",
+  assigned: "Awaiting receipt",
+  received: "At shop",
+  active: "At shop"
+};
+
+const vendorName = (vendors, vendorId) => {
+  const vendor = vendors.find((v) => v.vendor_id === vendorId || v._id === vendorId);
+  return getValue(vendor, ["shop_name", "name"], vendorId);
+};
+
 // Spoilage score bands, same as the backend: <=30 Low, 30-70 Medium, >70 High.
 const riskColor = (label) =>
   label === "High" ? "#b3261e" : label === "Medium" ? "#8a5a00" : "#035542";
@@ -257,7 +274,7 @@ function Topbar({ title, setOpen, onSignOut }) {
   );
 }
 
-function StatCard({ icon: Icon, title, value, text }) {
+function StatCard({ icon: Icon, title, value, text, action }) {
   return (
     <div className="dashboard-stat">
       <div className="dashboard-stat-icon">
@@ -270,34 +287,30 @@ function StatCard({ icon: Icon, title, value, text }) {
         <strong>{value}</strong>
         <span>{text}</span>
       </div>
+
+      {action && (
+        <button className="secondary-btn small-btn stat-action" onClick={action.onClick}>
+          {action.label}
+          <ChevronRight size={14} />
+        </button>
+      )}
     </div>
   );
 }
 
-function Dashboard({
-  vendors,
-  products,
-  inventory,
-  demands,
-  logs,
-  setPage,
-  refresh
-}) {
+function Dashboard({ vendors, products, batches, demands, logs, setPage, refresh }) {
   const pendingVendors = vendors.filter(
     (v) => String(vendorStatus(v)).toLowerCase() === "pending"
   ).length;
+  const liveVendors = vendors.filter((v) =>
+    ["active", "approved"].includes(String(vendorStatus(v)).toLowerCase())
+  ).length;
 
-  const lowStock = inventory.filter((item) => {
-    const quantity = Number(
-      getValue(item, ["quantity", "stock", "available_quantity"], 0)
-    );
-    return quantity <= reorderLevel(item);
-  }).length;
+  const active = batches.filter(isActiveBatch);
+  const unassigned = active.filter((b) => b.status === "available").length;
 
-  const pendingDemands = demands.filter((d) => {
-    const value = String(getValue(d, ["status"])).toLowerCase();
-    return !["synchronized", "completed", "cancelled", "rejected"].includes(value);
-  }).length;
+  // Only pending requests need the admin; the rest are history.
+  const queued = demands.filter((d) => getValue(d, ["status"]) === "pending").length;
 
   return (
     <div>
@@ -307,111 +320,45 @@ function Dashboard({
           <p>A compact view of your manufacturing operations</p>
         </div>
 
-        <button className="refresh-btn" onClick={refresh}>
-          <RefreshCw size={15} />
-          Refresh
-        </button>
+        <div className="dashboard-header-actions">
+          {queued > 0 && (
+            <button className="header-cta" onClick={() => setPage("demands")}>
+              {queued} batch request{queued === 1 ? "" : "s"} waiting
+              <ChevronRight size={16} />
+            </button>
+          )}
+          <button className="refresh-btn" onClick={refresh}>
+            <RefreshCw size={15} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className="dashboard-stats">
         <StatCard
           icon={Store}
           title="Vendors"
-          value={vendors.length}
-          text={`${pendingVendors} pending`}
+          value={liveVendors}
+          text={pendingVendors ? `live, ${pendingVendors} pending` : "live shops"}
+          action={
+            pendingVendors > 0
+              ? { label: `Review ${pendingVendors} pending`, onClick: () => setPage("vendors") }
+              : null
+          }
+        />
+        <StatCard
+          icon={Boxes}
+          title="Active Batches"
+          value={active.length}
+          text={`${unassigned} unassigned, ${active.length - unassigned} with shops`}
+          action={{ label: "View batches", onClick: () => setPage("batches") }}
         />
         <StatCard
           icon={Package}
           title="Products"
           value={products.length}
-          text="Catalog items"
+          text="in the catalog"
         />
-        <StatCard
-          icon={Warehouse}
-          title="Inventory"
-          value={inventory.length}
-          text={`${lowStock} low stock`}
-        />
-        <StatCard
-          icon={FileText}
-          title="Open Requests"
-          value={pendingDemands}
-          text={`${demands.length} total requests`}
-        />
-      </div>
-
-      <div className="dashboard-main-grid">
-        <section className="dashboard-section">
-          <h2>Batch Request Queue</h2>
-          <p>Latest vendor batch requests</p>
-
-          <div className="dashboard-card">
-            {demands.length === 0 ? (
-              <div className="demand-empty">
-                <FileText size={25} />
-                <p>No batch requests found.</p>
-                <button
-                  className="open-demand-btn"
-                  onClick={() => setPage("demands")}
-                >
-                  Open batch requests <ChevronRight size={13} />
-                </button>
-              </div>
-            ) : (
-              <div className="queue-list">
-                {demands.slice(0, 5).map((demand, index) => {
-                  const vendor = getValue(
-                    demand,
-                    ["vendor_id", "vendorId", "vendor"],
-                    "Unknown"
-                  );
-                  const value = getValue(demand, ["status"], "pending");
-
-                  return (
-                    <div
-                      className="queue-item"
-                      key={demand._id || demand.id || index}
-                    >
-                      <div className="queue-main">
-                        <div className="queue-title">Vendor {vendor}</div>
-                        <div className="queue-subtitle">
-                          {getValue(demand, ["priority"], "normal")} priority
-                        </div>
-                      </div>
-
-                      <div className="queue-right">
-                        <span className={statusClass(value)}>
-                          {formatStatus(value)}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="dashboard-section">
-          <h2>System Snapshot</h2>
-          <p>Current module counts</p>
-
-          <div className="dashboard-card">
-            <SnapshotRow icon={Store} label="Vendors" value={vendors.length} />
-            <SnapshotRow icon={Package} label="Products" value={products.length} />
-            <SnapshotRow
-              icon={Warehouse}
-              label="Inventory"
-              value={inventory.length}
-            />
-            <SnapshotRow
-              icon={RefreshCw}
-              label="Batch Requests"
-              value={demands.length}
-            />
-            <SnapshotRow icon={FileText} label="Activity" value={logs.length} />
-          </div>
-        </section>
       </div>
 
       <section className="dashboard-section activity-section">
@@ -453,18 +400,6 @@ function Dashboard({
           )}
         </div>
       </section>
-    </div>
-  );
-}
-
-function SnapshotRow({ icon: Icon, label, value }) {
-  return (
-    <div className="snapshot-row">
-      <div className="snapshot-left">
-        <Icon size={16} />
-        {label}
-      </div>
-      <span className="snapshot-count">{value}</span>
     </div>
   );
 }
@@ -850,7 +785,7 @@ const localNow = () => {
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 };
 
-function Batches({ batches, products, search, setSearch, refresh }) {
+function Batches({ batches, products, vendors, search, setSearch, refresh }) {
   // Only what the manufacturer knows. Shelf life depends on the vendor's storage
   // and the low-stock alert defaults to 20% of volume, both set by the backend.
   const [form, setForm] = useState({ product_id: "", volume_kg: "", manufactured_at: localNow() });
@@ -873,7 +808,8 @@ function Batches({ batches, products, search, setSearch, refresh }) {
           manufactured_at: new Date(form.manufactured_at).toISOString()
         })
       });
-      setMessage(data.error || `Batch ${data.batch?.batch_id} created and exposed to vendors.`);
+      const productName = products.find((p) => p.product_id === form.product_id)?.product_name || "Batch";
+      setMessage(data.error || `${productName} batch created and exposed to vendors.`);
       if (!data.error) setForm((prev) => ({ ...prev, volume_kg: "", manufactured_at: localNow() }));
       await refresh();
     } catch (error) {
@@ -894,14 +830,35 @@ function Batches({ batches, products, search, setSearch, refresh }) {
     }
   };
 
-  const filtered = batches.filter((batch) =>
-    JSON.stringify(batch).toLowerCase().includes(search.toLowerCase())
-  );
+  // Search by what people recognise: product, shop or status.
+  const query = search.toLowerCase();
+  const rows = batches
+    .filter(isActiveBatch)
+    .map((batch) => ({
+      ...batch,
+      productName: getValue(batch, ["product_name"], "") ||
+        products.find((p) => p.product_id === batch.product_id)?.product_name || batch.product_id || "Other",
+      shop: batch.vendor_id ? vendorName(vendors, batch.vendor_id) : "",
+      statusLabel: batch.status === "available" && batch.exposed === false
+        ? "Hidden"
+        : BATCH_STATUS_LABELS[batch.status]
+    }))
+    .filter((b) => [b.productName, b.shop, b.statusLabel].join(" ").toLowerCase().includes(query))
+    .sort((a, b) =>
+      String(getValue(b, ["manufactured_at", "created_at"], "")).localeCompare(
+        String(getValue(a, ["manufactured_at", "created_at"], ""))
+      )
+    );
+
+  const groups = [...new Set(rows.map((b) => b.productName))].map((name) => {
+    const list = rows.filter((b) => b.productName === name);
+    return { name, list, remaining: list.reduce((sum, b) => sum + Number(b.remaining_kg), 0) };
+  });
 
   return (
     <PageLayout
       title="Batches"
-      subtitle="Create batches and expose them for vendors to request"
+      subtitle="Active batches by product: unassigned, on the way, or at a shop"
       search={search}
       setSearch={setSearch}
     >
@@ -949,58 +906,66 @@ function Batches({ batches, products, search, setSearch, refresh }) {
         </div>
       </div>
 
-      <div className="table-card">
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Batch</th>
-                <th>Product</th>
-                <th>Vendor</th>
-                <th>Remaining</th>
-                <th>Manufactured</th>
-                <th>Status</th>
-                <th>Visibility</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((batch, index) => {
-                const low = batch.remaining_kg <= batch.threshold_kg;
-                return (
-                  <tr key={batch._id || index}>
-                    <td><strong>{batch.batch_id}</strong></td>
-                    <td>{getValue(batch, ["product_name", "product_id"], "-")}</td>
-                    <td>{batch.vendor_id || "-"}</td>
-                    <td>
-                      <span className={low && batch.vendor_id ? "status status-danger" : ""}>
-                        {batch.remaining_kg} / {batch.volume_kg} kg
-                      </span>
-                    </td>
-                    <td>{formatDate(getValue(batch, ["manufactured_at", "mfgTimestamp", "created_at"], ""))}</td>
-                    <td>
-                      <span className={statusClass(batch.status === "available" ? "pending" : batch.status)}>
-                        {formatStatus(batch.status)}
-                      </span>
-                    </td>
-                    <td>
-                      {batch.status === "available" ? (
-                        <button className="secondary-btn small-btn" onClick={() => toggleExposed(batch)}>
-                          {batch.exposed === false ? <EyeOff size={13} /> : <Eye size={13} />}
-                          {batch.exposed === false ? "Hidden" : "Exposed"}
-                        </button>
-                      ) : (
-                        "-"
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          {filtered.length === 0 && <div className="empty-state">No batches found.</div>}
+      {groups.length === 0 && (
+        <div className="table-card">
+          <div className="empty-state">No active batches.</div>
         </div>
-      </div>
+      )}
+
+      {groups.map((group) => (
+        <div className="table-card batch-group" key={group.name}>
+          <div className="batch-group-title">
+            <h3>{group.name}</h3>
+            <span>
+              {group.list.length} active batch{group.list.length === 1 ? "" : "es"}, {Number(group.remaining.toFixed(1))} kg left
+            </span>
+          </div>
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Vendor</th>
+                  <th>Remaining / Assigned</th>
+                  <th>Manufactured</th>
+                  <th>Status</th>
+                  <th>Visibility</th>
+                </tr>
+              </thead>
+              <tbody>
+                {group.list.map((batch) => {
+                  const low = batch.vendor_id && batch.remaining_kg <= batch.threshold_kg;
+                  return (
+                    <tr key={batch._id}>
+                      <td><strong>{batch.shop || "Not assigned"}</strong></td>
+                      <td>
+                        <span className={low ? "status status-danger" : ""}>
+                          {batch.remaining_kg} / {batch.volume_kg} kg
+                        </span>
+                      </td>
+                      <td>{formatDate(getValue(batch, ["manufactured_at", "mfgTimestamp", "created_at"], ""))}</td>
+                      <td>
+                        <span className={statusClass(batch.status === "available" ? "pending" : "active")}>
+                          {batch.statusLabel}
+                        </span>
+                      </td>
+                      <td>
+                        {batch.status === "available" ? (
+                          <button className="secondary-btn small-btn" onClick={() => toggleExposed(batch)}>
+                            {batch.exposed === false ? <EyeOff size={13} /> : <Eye size={13} />}
+                            {batch.exposed === false ? "Hidden" : "Exposed"}
+                          </button>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
     </PageLayout>
   );
 }
@@ -1827,7 +1792,7 @@ function App() {
             <Dashboard
               vendors={vendors}
               products={products}
-              inventory={inventory}
+              batches={batches}
               demands={demands}
               logs={logs}
               setPage={setPage}
@@ -1848,6 +1813,7 @@ function App() {
             <Batches
               batches={batches}
               products={products}
+              vendors={vendors}
               search={search}
               setSearch={setSearch}
               refresh={loadData}
