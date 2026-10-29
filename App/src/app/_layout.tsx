@@ -1,11 +1,10 @@
 import {
-  WorkSans_400Regular,
-  WorkSans_500Medium,
-  WorkSans_600SemiBold,
-  WorkSans_700Bold,
-  WorkSans_900Black,
-  useFonts,
-} from "@expo-google-fonts/work-sans";
+  Manrope_400Regular,
+  Manrope_500Medium,
+  Manrope_600SemiBold,
+  Manrope_700Bold,
+} from "@expo-google-fonts/manrope";
+import { WorkSans_900Black, useFonts } from "@expo-google-fonts/work-sans";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
@@ -19,10 +18,10 @@ void SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
-    WorkSans_400Regular,
-    WorkSans_500Medium,
-    WorkSans_600SemiBold,
-    WorkSans_700Bold,
+    Manrope_400Regular,
+    Manrope_500Medium,
+    Manrope_600SemiBold,
+    Manrope_700Bold,
     WorkSans_900Black,
   });
 

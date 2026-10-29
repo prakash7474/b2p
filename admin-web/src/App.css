@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;900&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Work+Sans:wght@900&display=swap");
 
 :root {
   /* Same look as the shop app: forest green, butter yellow, outlined controls, no shadows. */
@@ -22,6 +22,7 @@
   --danger: #b3261e;
   --danger-bg: #fbeceb;
   --shadow: none;
+  --display: "Work Sans", sans-serif;
 }
 
 * {
@@ -30,7 +31,7 @@
 
 body {
   margin: 0;
-  font-family: "Work Sans", sans-serif;
+  font-family: "Manrope", sans-serif;
   background: var(--background);
   color: var(--text);
 }
@@ -39,6 +40,11 @@ button,
 input,
 select {
   font: inherit;
+}
+
+strong,
+b {
+  font-weight: 700;
 }
 
 button {
@@ -275,6 +281,7 @@ button:disabled {
   margin: 0;
   font-size: 104px;
   font-weight: 900;
+  font-family: var(--display);
   line-height: 0.85;
   letter-spacing: -0.03em;
   text-transform: uppercase;
@@ -355,6 +362,7 @@ button:disabled {
 .dashboard-stat-value strong {
   font-size: 40px;
   font-weight: 900;
+  font-family: var(--display);
   letter-spacing: -0.02em;
 }
 
@@ -393,6 +401,12 @@ button:disabled {
   border: 2px solid var(--outline);
   border-radius: 20px;
   box-shadow: var(--shadow);
+  /* Clips the table header fill to the rounded corners. */
+  overflow: hidden;
+}
+
+.form-card + .table-card {
+  margin-top: 20px;
 }
 
 .dashboard-card {
@@ -528,6 +542,7 @@ button:disabled {
   margin: 0;
   font-size: 44px;
   font-weight: 900;
+  font-family: var(--display);
   line-height: 1;
   text-transform: uppercase;
   color: var(--primary);

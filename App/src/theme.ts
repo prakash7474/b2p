@@ -32,11 +32,12 @@ export const colors = {
   tableHeader: "#fbf6dd",
 };
 
+/** Manrope for body copy; Work Sans Black only for the billboard headings. */
 export const fonts = {
-  regular: "WorkSans_400Regular",
-  medium: "WorkSans_500Medium",
-  semibold: "WorkSans_600SemiBold",
-  bold: "WorkSans_700Bold",
+  regular: "Manrope_400Regular",
+  medium: "Manrope_500Medium",
+  semibold: "Manrope_600SemiBold",
+  bold: "Manrope_700Bold",
   black: "WorkSans_900Black",
 };
 
