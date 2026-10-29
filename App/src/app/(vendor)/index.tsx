@@ -84,8 +84,8 @@ export default function DashboardScreen() {
 
   return (
     <Screen
-      title="Dashboard"
-      subtitle={String(vendor?.shop_name ?? "Your shop at a glance")}
+      title={String(vendor?.shop_name ?? "Dashboard")}
+      subtitle="Your shop at a glance: deliveries to confirm, stock and risk"
       action={
         <SecondaryButton
           label="Refresh"

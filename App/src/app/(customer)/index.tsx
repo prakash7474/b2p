@@ -98,7 +98,7 @@ export default function CustomerHomeScreen() {
 
   return (
     <Screen
-      portal="CUSTOMER PORTAL"
+      portal="B2P CUSTOMER"
       title="Eat fresh"
       subtitle={`Hi ${String(customer?.name ?? "there")}, these shops within 5 km have batter in stock`}
       action={

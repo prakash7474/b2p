@@ -16,8 +16,8 @@ import { colors, fonts } from "@/src/theme";
 type ScreenProps = {
   title: string;
   subtitle?: string;
-  /** Portal label shown above the title (defaults to the vendor portal). */
-  portal?: "VENDOR PORTAL" | "CUSTOMER PORTAL";
+  /** Small label shown above the title (defaults to the vendor app). */
+  portal?: "B2P VENDOR" | "B2P CUSTOMER";
   /** Glyph shown in the round stamp beside the title. */
   icon?: keyof typeof MaterialCommunityIcons.glyphMap;
   iconTone?: "primary" | "danger";
@@ -36,7 +36,7 @@ type ScreenProps = {
 export function Screen({
   title,
   subtitle,
-  portal = "VENDOR PORTAL",
+  portal = "B2P VENDOR",
   icon,
   iconTone = "primary",
   action,
@@ -67,10 +67,7 @@ export function Screen({
       >
         <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
           <View style={styles.brandRow}>
-            <View style={styles.brandText}>
-              <Text style={styles.portal}>{portal}</Text>
-              <Text style={styles.brandName}>Batter to Platter</Text>
-            </View>
+            <Text style={styles.portal}>{portal}</Text>
             <OnDark.Provider value>{action}</OnDark.Provider>
           </View>
 
@@ -134,20 +131,12 @@ export const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 12,
   },
-  brandText: {
-    flex: 1,
-    gap: 2,
-  },
   portal: {
-    fontSize: 12,
-    letterSpacing: 1.4,
+    flex: 1,
+    fontSize: 13,
+    letterSpacing: 1.6,
     color: colors.butter,
-    fontFamily: fonts.medium,
-  },
-  brandName: {
-    fontSize: 18,
-    color: "#fff",
-    fontFamily: fonts.medium,
+    fontFamily: fonts.bold,
   },
   titleRow: {
     flexDirection: "row",
