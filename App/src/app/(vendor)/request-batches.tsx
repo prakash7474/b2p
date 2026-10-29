@@ -27,6 +27,8 @@ function formatDate(value: unknown): string {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
+const RECENT_REQUESTS = 5;
+
 function requestedBatch(demand: DemandRequest) {
   return (demand.items ?? []).find((item) => item.batch_id);
 }
@@ -40,6 +42,7 @@ export default function RequestBatchesScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [busyId, setBusyId] = useState("");
+  const [showAll, setShowAll] = useState(false);
 
   const load = useCallback(async () => {
     if (!vendorId) return;
@@ -93,6 +96,11 @@ export default function RequestBatchesScreen() {
     void load();
   };
 
+  // The newest few by default; an assignment still waiting for your confirmation always shows.
+  const listed = showAll
+    ? requests
+    : requests.filter((demand, index) => index < RECENT_REQUESTS || demand.status === "confirmed");
+
   return (
     <Screen
       title="Request Batches"
@@ -131,9 +139,7 @@ export default function RequestBatchesScreen() {
                 <View key={id || index} style={[styles.row, index === available.length - 1 && styles.rowLast]}>
                   <View style={styles.rowMain}>
                     <Text style={styles.rowTitle}>{String(batch.product_name ?? "Batch")}</Text>
-                    <Text style={styles.rowMeta}>
-                      {id} · {Number(batch.remaining_kg ?? 0)} kg
-                    </Text>
+                    <Text style={styles.rowMeta}>{Number(batch.remaining_kg ?? 0)} kg</Text>
                     <Text style={styles.rowMeta}>
                       Made {formatDate(batch.manufactured_at ?? batch.mfgTimestamp ?? batch.created_at)}
                     </Text>
@@ -156,7 +162,7 @@ export default function RequestBatchesScreen() {
       <View>
         <SectionTitle
           title="My Batch Requests"
-          subtitle="Admin assigns, then you confirm the assignment"
+          subtitle="Your latest requests. The admin assigns a batch, then you confirm it arrived"
         />
         <Card>
           {requests.length === 0 ? (
@@ -166,14 +172,14 @@ export default function RequestBatchesScreen() {
               text="Request a batch above to start."
             />
           ) : (
-            requests.map((demand, index) => {
+            listed.map((demand, index) => {
               const status = String(demand.status ?? "pending");
               const item = requestedBatch(demand) ?? demand.items?.[0];
               const batchId = String(item?.batch_id ?? "");
               return (
                 <View
                   key={String(demand._id ?? index)}
-                  style={[styles.row, index === requests.length - 1 && styles.rowLast]}
+                  style={[styles.row, index === listed.length - 1 && styles.rowLast]}
                 >
                   <View style={styles.rowMain}>
                     <View style={styles.titleRow}>
@@ -183,7 +189,7 @@ export default function RequestBatchesScreen() {
                       <StatusPill status={status} label={REQUEST_LABELS[status]} />
                     </View>
                     <Text style={styles.rowMeta}>
-                      {batchId ? `Batch ${batchId}` : "Product request"} · {Number(item?.quantity ?? demand.requested_quantity_kg ?? 0)} kg
+                      {Number(item?.quantity ?? demand.requested_quantity_kg ?? 0)} kg · requested {formatDate(demand.created_at)}
                     </Text>
                     {demand.admin_notes ? (
                       <Text style={styles.rowMeta}>Admin: {demand.admin_notes}</Text>
@@ -203,6 +209,15 @@ export default function RequestBatchesScreen() {
             })
           )}
         </Card>
+        {requests.length > RECENT_REQUESTS ? (
+          <View style={styles.toggle}>
+            <SecondaryButton
+              label={showAll ? "Show recent only" : `Show all ${requests.length} requests`}
+              compact
+              onPress={() => setShowAll((value) => !value)}
+            />
+          </View>
+        ) : null}
       </View>
     </Screen>
   );
@@ -220,6 +235,10 @@ const styles = StyleSheet.create({
   },
   rowLast: {
     borderBottomWidth: 0,
+  },
+  toggle: {
+    alignItems: "center",
+    marginTop: 12,
   },
   rowMain: {
     flex: 1,
