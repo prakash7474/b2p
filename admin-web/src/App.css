@@ -1,23 +1,24 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;900&display=swap");
 
 :root {
-  /* Perk-style palette: parchment ground, ink text, electric-lime accent, no shadows. */
-  --accent: #beff50;
-  --accent-dark: #a6e63a;
-  --primary: #14140f;
-  --primary-dark: #14140f;
-  --primary-light: #beff50;
-  --sidebar: #30302a;
-  --sidebar-hover: #3d3d36;
-  --text: #14140f;
-  --muted: #6e6e64;
-  --background: #f5f5eb;
+  /* Same look as the shop app: forest green, butter yellow, outlined controls, no shadows. */
+  --accent: #f9e9a9;
+  --accent-dark: #f3dc85;
+  --primary: #035542;
+  --primary-dark: #023b2e;
+  --primary-light: #f9e9a9;
+  --outline: #035542;
+  --sidebar: #035542;
+  --sidebar-hover: #0b6a54;
+  --text: #333333;
+  --muted: #5c5c5c;
+  --background: #ffffff;
   --surface: #ffffff;
-  --border: #d2d2c8;
-  --success: #2f6b1f;
-  --success-bg: #eef8dc;
-  --warning: #7a5a00;
-  --warning-bg: #f7efd2;
+  --border: #cfdcd8;
+  --success: #035542;
+  --success-bg: #e6f2ee;
+  --warning: #8a5a00;
+  --warning-bg: #fbf3d0;
   --danger: #b3261e;
   --danger-bg: #fbeceb;
   --shadow: none;
@@ -29,7 +30,7 @@
 
 body {
   margin: 0;
-  font-family: "Inter", sans-serif;
+  font-family: "Work Sans", sans-serif;
   background: var(--background);
   color: var(--text);
 }
@@ -81,7 +82,7 @@ button:disabled {
   height: 40px;
   border-radius: 9999px;
   background: var(--accent);
-  color: var(--text);
+  color: var(--primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -95,7 +96,7 @@ button:disabled {
 
 .brand span {
   display: block;
-  color: #d2d2c8;
+  color: #e6f2ee;
   font-size: 12px;
   margin-top: 3px;
 }
@@ -110,7 +111,7 @@ button:disabled {
 
 .nav-title {
   padding: 0 11px 7px;
-  color: #a8a89c;
+  color: var(--accent);
   font-size: 12px;
   font-weight: 500;
   text-transform: uppercase;
@@ -121,7 +122,7 @@ button:disabled {
   width: 100%;
   border: 0;
   background: transparent;
-  color: #d2d2c8;
+  color: #e6f2ee;
   display: flex;
   align-items: center;
   gap: 11px;
@@ -139,7 +140,7 @@ button:disabled {
 
 .nav-item.active {
   background: var(--accent);
-  color: var(--text);
+  color: var(--primary);
 }
 
 .nav-item span {
@@ -164,7 +165,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 9px;
-  color: #d2d2c8;
+  color: #e6f2ee;
   font-size: 13px;
   background: var(--sidebar);
 }
@@ -200,7 +201,7 @@ button:disabled {
   height: 72px;
   padding: 0 32px;
   background: white;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 2px solid var(--outline);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -216,7 +217,7 @@ button:disabled {
 
 .menu-btn {
   display: none;
-  border: 1px solid var(--border);
+  border: 2px solid var(--outline);
   background: white;
   width: 36px;
   height: 36px;
@@ -260,22 +261,29 @@ button:disabled {
 
 .dashboard-header {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: flex-end;
+  gap: 20px;
   margin-bottom: 25px;
+  padding: 40px;
+  border-radius: 20px;
+  background: var(--sidebar);
 }
 
 .dashboard-header h1 {
   margin: 0;
-  font-size: 56px;
-  font-weight: 500;
-  line-height: 1.02;
-  letter-spacing: -0.02em;
+  font-size: 104px;
+  font-weight: 900;
+  line-height: 0.85;
+  letter-spacing: -0.03em;
+  text-transform: uppercase;
+  color: var(--accent);
 }
 
 .dashboard-header p {
   margin: 7px 0 0;
-  color: var(--muted);
+  color: white;
   font-size: 15px;
 }
 
@@ -284,15 +292,25 @@ button:disabled {
   align-items: center;
   gap: 7px;
   padding: 9px 13px;
-  border: 1px solid var(--border);
-  background: white;
+  border: 2px solid var(--outline);
+  background: transparent;
   border-radius: 9999px;
-  color: var(--text);
+  color: var(--primary);
   font-size: 14px;
 }
 
 .refresh-btn:hover {
-  background: #ebebe0;
+  background: #f2f2f2;
+}
+
+/* The dashboard's refresh button sits on the green band. */
+.dashboard-header .refresh-btn {
+  border-color: white;
+  color: white;
+}
+
+.dashboard-header .refresh-btn:hover {
+  background: var(--sidebar-hover);
 }
 
 .dashboard-stats {
@@ -304,8 +322,8 @@ button:disabled {
 
 .dashboard-stat {
   background: white;
-  border: 1px solid var(--border);
-  border-radius: 28px;
+  border: 2px solid var(--outline);
+  border-radius: 20px;
   padding: 20px;
   box-shadow: var(--shadow);
 }
@@ -336,7 +354,7 @@ button:disabled {
 
 .dashboard-stat-value strong {
   font-size: 40px;
-  font-weight: 500;
+  font-weight: 900;
   letter-spacing: -0.02em;
 }
 
@@ -372,8 +390,8 @@ button:disabled {
 .form-card,
 .ai-table-card {
   background: white;
-  border: 1px solid var(--border);
-  border-radius: 28px;
+  border: 2px solid var(--outline);
+  border-radius: 20px;
   box-shadow: var(--shadow);
 }
 
@@ -509,9 +527,10 @@ button:disabled {
 .page-heading-large h1 {
   margin: 0;
   font-size: 44px;
-  font-weight: 500;
-  line-height: 1.05;
-  letter-spacing: -0.02em;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--primary);
 }
 
 .page-subtitle,
@@ -562,8 +581,8 @@ table {
 th {
   padding: 12px 16px;
   text-align: left;
-  background: #f5f5eb;
-  color: var(--muted);
+  background: #fbf6dd;
+  color: var(--primary);
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: .1em;
@@ -579,7 +598,7 @@ td {
 }
 
 tbody tr:hover {
-  background: #fafaf2;
+  background: #f6faf8;
 }
 
 tbody tr:last-child td {
@@ -591,6 +610,7 @@ tbody tr:last-child td {
 .status {
   display: inline-flex;
   white-space: nowrap;
+  border: 2px solid currentColor;
   padding: 4px 9px;
   border-radius: 9999px;
   font-size: 12px;
@@ -613,8 +633,8 @@ tbody tr:last-child td {
 }
 
 .status-neutral {
-  color: #30302a;
-  background: #ebebe0;
+  color: #333333;
+  background: #f2f2f2;
 }
 
 /* BUTTONS */
@@ -631,9 +651,9 @@ tbody tr:last-child td {
 }
 
 .primary-btn {
-  border: 0;
+  border: 2px solid var(--outline);
   background: var(--accent);
-  color: var(--text);
+  color: var(--primary);
   padding: 11px 20px;
 }
 
@@ -642,14 +662,14 @@ tbody tr:last-child td {
 }
 
 .secondary-btn {
-  border: 1px solid var(--border);
+  border: 2px solid var(--outline);
   background: transparent;
-  color: var(--text);
+  color: var(--primary);
   padding: 10px 18px;
 }
 
 .secondary-btn:hover {
-  background: #ebebe0;
+  background: #f2f2f2;
 }
 
 .small-btn {
@@ -761,7 +781,7 @@ tbody tr:last-child td {
 .ai-page-icon {
   width: 46px;
   height: 46px;
-  border-radius: 28px;
+  border-radius: 20px;
   background: var(--primary-light);
   color: var(--primary);
   display: flex;
@@ -778,8 +798,8 @@ tbody tr:last-child td {
 .ai-selector-card {
   margin-top: 24px;
   background: white;
-  border: 1px solid var(--border);
-  border-radius: 28px;
+  border: 2px solid var(--outline);
+  border-radius: 20px;
   padding: 17px 19px;
   display: flex;
   justify-content: space-between;
@@ -841,7 +861,7 @@ tbody tr:last-child td {
 .risk-bar {
   height: 7px;
   border-radius: 4px;
-  background: #ebebe0;
+  background: #f2f2f2;
   overflow: hidden;
   margin-top: 6px;
   min-width: 90px;
@@ -883,8 +903,8 @@ tbody tr:last-child td {
 
 .ai-stat-card {
   background: white;
-  border: 1px solid var(--border);
-  border-radius: 28px;
+  border: 2px solid var(--outline);
+  border-radius: 20px;
   padding: 17px;
   box-shadow: var(--shadow);
 }
@@ -935,7 +955,7 @@ tbody tr:last-child td {
   margin-top: 18px;
   min-height: 280px;
   border: 1px dashed var(--border);
-  border-radius: 28px;
+  border-radius: 20px;
   background: white;
   display: flex;
   flex-direction: column;
@@ -1021,7 +1041,7 @@ tbody tr:last-child td {
   height: 38px;
   border-radius: 9999px;
   background: var(--accent);
-  color: var(--text);
+  color: var(--primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1140,7 +1160,7 @@ tbody tr:last-child td {
   }
 
   .dashboard-header h1 {
-    font-size: 36px;
+    font-size: 64px;
   }
 
   .page-title {

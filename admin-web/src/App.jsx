@@ -79,7 +79,7 @@ const formatDate = (value) => {
 
 // Spoilage score bands, same as the backend: <=30 Low, 30-70 Medium, >70 High.
 const riskColor = (label) =>
-  label === "High" ? "#b3261e" : label === "Medium" ? "#7a5a00" : "#2f6b1f";
+  label === "High" ? "#b3261e" : label === "Medium" ? "#8a5a00" : "#035542";
 
 const formatStatus = (status) =>
   String(status || "unknown")
