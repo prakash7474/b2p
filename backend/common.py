@@ -131,11 +131,27 @@ def _find_vendor(vendor_id):
 # Shelf life and expiry (rules, not ML; the forecast, risk, orders and the
 # expiry job all use them)
 # ------------------------------------------------------------
+_catalog_cache = {"at": None, "rows": []}
+
+
+def _catalog():
+    """Product rows, re-read at most once a minute: shelf life is looked up per batch."""
+    now = datetime.datetime.utcnow()
+    if _catalog_cache["at"] is None or (now - _catalog_cache["at"]).total_seconds() > 60:
+        _catalog_cache.update(at=now, rows=list(COLS["products"].find()))
+    return _catalog_cache["rows"]
+
+
+def _forget_catalog():
+    """Call after any product write so shelf-life changes apply at once."""
+    _catalog_cache["at"] = None
+
+
 def _shelf_life_hours(batch, has_fridge):
     """Product shelf life for the vendor's storage: fridge vs room temperature."""
     keys = ("shelf_life_fridge_hrs", "shelf_life_hours") if has_fridge else ("shelf_life_ambient_hrs",)
     name = _product_key(_field(batch, "product_name", "product_id"))
-    for product in COLS["products"].find():
+    for product in _catalog():
         same = product.get("product_id") == batch.get("product_id") or _product_key(product.get("product_name")) == name
         if same and _field(product, *keys) is not None:
             return float(_field(product, *keys))
@@ -204,6 +220,12 @@ def _adjust_inventory(vendor_id, batch, delta):
     })
 
 
+def _log(action, message, vendor_id=None, kind="activity", **extra):
+    """One audit-log entry; kind "alert" marks things the admin should act on."""
+    COLS["logs"].insert_one({"type": kind, "action": action, "message": message, "vendor_id": vendor_id,
+                             "timestamp": datetime.datetime.utcnow(), **extra})
+
+
 def expire_batches():
     """Stamp newly expired held batches and take their kg out of inventory, once each.
 
@@ -222,6 +244,10 @@ def expire_batches():
             {"$set": {"expired_at": datetime.datetime.utcnow()}}
         ).modified_count:
             _adjust_inventory(vendor.get("vendor_id") or vid, batch, -_batch_remaining(batch))
+            _log("batch_expired",
+                 f"{_field(batch, 'product_name', 'product_id', default='Batter')} at "
+                 f"{vendor.get('shop_name') or vid} expired with {round(_batch_remaining(batch), 2)} kg left",
+                 vendor.get("vendor_id") or vid, kind="alert", batch_id=batch.get("batch_id"))
             expired += 1
     return expired
 

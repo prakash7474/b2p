@@ -76,6 +76,7 @@ def _empty_collections(db):
     """Every test starts with empty collections."""
     for name in db.list_collection_names():
         db[name].drop()
+    main._forget_catalog()  # products are cached for shelf-life lookups
     yield
 
 
@@ -967,3 +968,33 @@ def test_list_routes_page_newest_first(client, seeded):
     assert [log["message"] for log in first] == ["three", "two"]
     assert [log["message"] for log in client.get("/logs", params={"limit": 2, "skip": 2}).json()["logs"]] == ["one"]
     assert client.get("/logs", params={"limit": 0}).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /shop-stock
+# ---------------------------------------------------------------------------
+
+def test_shop_stock_splits_sellable_awaiting_and_expired(client, seeded, db):
+    now = datetime.utcnow()
+    db.products.insert_one({"product_id": "P001", "product_name": "Idli Batter",
+                            "shelf_life_fridge_hrs": 72, "shelf_life_ambient_hrs": 24})
+    db.batches.insert_many([
+        # received, fresh, 2 of 10 kg left: sellable and low (threshold 2 kg)
+        {"batch_id": "S1", "product_id": "P001", "product_name": "Idli Batter", "vendor_id": ACTIVE_VENDOR,
+         "status": "received", "volume_kg": 10, "remaining_volume_kg": 2, "manufactured_at": now - timedelta(hours=2)},
+        # assigned, not yet confirmed by the shop
+        {"batch_id": "S2", "product_id": "P001", "product_name": "Idli Batter", "vendor_id": ACTIVE_VENDOR,
+         "status": "assigned", "volume_kg": 5, "manufactured_at": now - timedelta(hours=1)},
+        # past its 72 h shelf life
+        {"batch_id": "S3", "product_id": "P001", "product_name": "Idli Batter", "vendor_id": ACTIVE_VENDOR,
+         "status": "received", "volume_kg": 4, "manufactured_at": now - timedelta(hours=80)},
+    ])
+    body = client.get("/shop-stock").json()
+    shop = next(s for s in body["shops"] if s["vendor_id"] == ACTIVE_VENDOR)
+    row = shop["products"][0]
+    assert (row["sellable_kg"], row["awaiting_kg"], row["expired_kg"], row["held_kg"]) == (2.0, 5.0, 4.0, 7.0)
+    assert row["low_stock"] is True
+    levels = sorted(alert["level"] for alert in shop["alerts"])
+    assert levels == ["danger", "info", "warning"]
+    # the pending vendor holds nothing, so it is left out
+    assert PENDING_VENDOR not in {s["vendor_id"] for s in body["shops"]}

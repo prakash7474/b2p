@@ -349,6 +349,81 @@ button:disabled {
   margin-top: 14px;
 }
 
+.inventory-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.secondary-btn.toggle-on {
+  background: var(--accent);
+}
+
+.shop-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 20px 16px;
+}
+
+.shop-alerts .alert {
+  margin: 0;
+}
+
+.log-filters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 2px solid var(--outline);
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.filter-pill span {
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  background: var(--success-bg);
+  font-size: 12px;
+}
+
+.filter-pill.active {
+  background: var(--accent);
+}
+
+.filter-pill.active span {
+  background: white;
+}
+
+.ai-vendor-select.log-range {
+  width: auto;
+}
+
+.activity-icon-alert {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
 .past-requests {
   margin-top: 32px;
 }
@@ -779,6 +854,16 @@ tbody tr:last-child td {
 .alert-warning {
   color: var(--warning);
   background: var(--warning-bg);
+}
+
+.alert-error {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.alert-info {
+  color: var(--primary);
+  background: var(--success-bg);
 }
 
 /* AI */

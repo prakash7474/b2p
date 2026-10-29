@@ -12,14 +12,16 @@ if __package__:
     from .common import (_field, _product_key, _batch_remaining, _batch_volume, _batch_threshold,
                          _sellable_batches, _adjust_inventory, _hours_to_expiry,
                          _find_vendor, _vendor_id_values, _find_login_user, _vendor_for_user,
-                         _vendor_status, _locality_tier)
+                         _vendor_status, _locality_tier, _held_batches, _log,
+                         _forget_catalog)
     from . import ml  # noqa: F401  registers the model routes
 else:
     from common import *  # noqa: F401,F403
     from common import (_field, _product_key, _batch_remaining, _batch_volume, _batch_threshold,
                         _sellable_batches, _adjust_inventory, _hours_to_expiry,
                         _find_vendor, _vendor_id_values, _find_login_user, _vendor_for_user,
-                        _vendor_status, _locality_tier)
+                        _vendor_status, _locality_tier, _held_batches, _log,
+                        _forget_catalog)
     import ml  # noqa: F401  registers the model routes
 
 
@@ -588,6 +590,7 @@ def create_product(data: dict = Body(...), user: dict = Depends(current_user)):
         raise HTTPException(status_code=409, detail=f"Product with product_id {product_id} already exists")
     product_doc = {"product_id": product_id, **fields, "created_at": datetime.datetime.utcnow().isoformat()}
     result = COLS["products"].insert_one(product_doc)
+    _forget_catalog()
     product_doc["_id"] = str(result.inserted_id)
     COLS["logs"].insert_one({
         "type": "activity",
@@ -618,6 +621,7 @@ def update_product(product_id: str = Path(...), data: dict = Body(...), user: di
     updated = COLS["products"].find_one_and_update(
         {"product_id": product_id}, {"$set": fields}, return_document=ReturnDocument.AFTER
     )
+    _forget_catalog()
     updated["_id"] = str(updated["_id"])
     COLS["logs"].insert_one({
         "type": "activity",
@@ -642,6 +646,7 @@ def delete_product(product_id: str = Path(...), user: dict = Depends(current_use
     if active:
         raise HTTPException(status_code=409, detail=f"{product['product_name']} still has {active} active batch(es)")
     COLS["products"].delete_one({"_id": product["_id"]})
+    _forget_catalog()
     COLS["logs"].insert_one({
         "type": "activity",
         "action": "delete_product",
@@ -728,7 +733,8 @@ def create_batch(data: dict = Body(...), user: dict = Depends(current_user)):
         "vendor_id": vendor_id,
         "batch_id": batch_id,
         "product_id": product_id,
-        "message": f"Created batch {batch_id} for product {product_id}"
+        "timestamp": datetime.datetime.utcnow(),
+        "message": f"Made a {volume:g} kg {product.get('product_name') or product_id} batch"
     })
     return {"message": "Batch created successfully", "batch": batch_doc}
 
@@ -857,6 +863,91 @@ def list_inventory(vendor_id: str = None, product_id: str = None, user: dict = D
     for item in items:
         item["_id"] = str(item["_id"])
     return {"count": len(items), "inventory": items}
+
+
+EXPIRY_SOON_HOURS = 6
+
+
+def _kg(value):
+    return f"{round(value, 1):g} kg"
+
+
+@app.get("/shop-stock")
+def shop_stock(user: dict = Depends(current_user)):
+    """What every shop holds right now, per product, built from batches (the source of truth),
+    with the alerts the admin should see for that shop."""
+    require_role(user)
+    now = datetime.datetime.utcnow()
+    # Latest forecast per shop and product for the window still open, from the predictions log.
+    forecasts = {}
+    for pred in COLS["predictions"].find({"windowEnd": {"$gte": now}}).sort("generatedAt", 1):
+        forecasts[(pred.get("vendorId"), pred.get("productId"))] = float(pred.get("predictedValue") or 0)
+
+    shops = []
+    for vendor in COLS["vendors"].find():
+        held = _held_batches(vendor)
+        if not held and str(_vendor_status(vendor)).lower() not in ("active", "approved"):
+            continue
+        products = {}
+        for batch in held:
+            name = _field(batch, "product_name", "product_id", default="Batter")
+            row = products.setdefault(name, {"product_name": name, "held_kg": 0.0, "sellable_kg": 0.0,
+                                             "awaiting_kg": 0.0, "expired_kg": 0.0, "threshold_kg": 0.0,
+                                             "batches": 0, "next_expiry_hours": None})
+            kg = _batch_remaining(batch)
+            row["batches"] += 1
+            if batch["expired"]:
+                row["expired_kg"] += kg
+                continue
+            row["held_kg"] += kg
+            if batch["status"] == "assigned":
+                row["awaiting_kg"] += kg
+                continue
+            row["sellable_kg"] += kg
+            row["threshold_kg"] += _batch_threshold(batch)
+            hours = _hours_to_expiry(vendor, batch)
+            if row["next_expiry_hours"] is None or hours < row["next_expiry_hours"]:
+                row["next_expiry_hours"] = hours
+
+        alerts = []
+        for row in products.values():
+            name = row["product_name"]
+            label = ml._model_label(name)
+            forecast = next((forecasts[(vid, label)] for vid in _vendor_id_values(vendor)
+                             if (vid, label) in forecasts), None)
+            row["forecast_kg"] = forecast
+            row["low_stock"] = row["sellable_kg"] > 0 and row["sellable_kg"] <= row["threshold_kg"]
+            for key in ("held_kg", "sellable_kg", "awaiting_kg", "expired_kg", "threshold_kg"):
+                row[key] = round(row[key], 2)
+            if row["next_expiry_hours"] is not None:
+                row["next_expiry_hours"] = round(row["next_expiry_hours"], 1)
+            if row["expired_kg"]:
+                alerts.append({"level": "danger", "text": f"{name}: {_kg(row['expired_kg'])} expired, return or discard it"})
+            if row["next_expiry_hours"] is not None and row["next_expiry_hours"] <= EXPIRY_SOON_HOURS:
+                alerts.append({"level": "warning", "text": f"{name}: a batch expires in {row['next_expiry_hours']:g} h, sell it first"})
+            if row["low_stock"]:
+                alerts.append({"level": "warning", "text": f"{name}: low stock, {_kg(row['sellable_kg'])} left"})
+            if forecast is not None and row["sellable_kg"] + row["awaiting_kg"] < forecast:
+                alerts.append({"level": "warning", "text": f"{name}: {_kg(row['sellable_kg'] + row['awaiting_kg'])} "
+                                                          f"on hand, below the {_kg(forecast)} forecast"})
+            if row["awaiting_kg"]:
+                alerts.append({"level": "info", "text": f"{name}: {_kg(row['awaiting_kg'])} waiting for the shop to confirm receipt"})
+
+        rows = sorted(products.values(), key=lambda r: r["product_name"])
+        shops.append({
+            "vendor_id": vendor.get("vendor_id") or str(vendor["_id"]),
+            "shop_name": vendor.get("shop_name") or vendor.get("vendor_id"),
+            "locality": _field(vendor, "locality_tier", "localityTier", default=""),
+            "has_fridge": bool(_field(vendor, "hasRefrigerator", "has_refrigerator", default=True)),
+            "status": _vendor_status(vendor),
+            "held_kg": round(sum(r["held_kg"] for r in rows), 2),
+            "sellable_kg": round(sum(r["sellable_kg"] for r in rows), 2),
+            "products": rows,
+            "alerts": alerts,
+        })
+    # Shops that need attention first.
+    shops.sort(key=lambda s: (-sum(a["level"] != "info" for a in s["alerts"]), s["shop_name"] or ""))
+    return {"count": len(shops), "shops": shops}
 
 
 @app.post("/vendors/{vendor_id}/demands")
@@ -997,6 +1088,10 @@ def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...), user:
             }
         }
     )
+    shop = (_find_vendor(vendor_id) or {}).get("shop_name") or vendor_id
+    items = ", ".join(f"{_field(i, 'product_name', 'product_id', default='batter')} {i.get('quantity', '')} kg".strip()
+                      for i in demand.get("items", [])) or "request"
+    _log("assign_batch", f"Assigned {items} to {shop}", vendor_id, request_id=demand_id)
 
     return {
         "message": "Demand confirmed",
@@ -1018,6 +1113,8 @@ def reject_demand(vendor_id: str = Path(...), demand_id: str = Path(...), data: 
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Pending demand not found")
+    shop = (_find_vendor(vendor_id) or {}).get("shop_name") or vendor_id
+    _log("reject_request", f"Rejected a batch request from {shop}", vendor_id, request_id=demand_id)
     return {"message": "Demand rejected", "demand_id": demand_id, "status": "rejected"}
 
 

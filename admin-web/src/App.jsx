@@ -64,9 +64,63 @@ const getValue = (obj, keys, fallback = "") => {
 const vendorStatus = (vendor) =>
   getValue(vendor, ["status", "verificationStatus"], "pending");
 
-// Inventory rows use minimumStock (seed) or minimum_stock.
-const reorderLevel = (item) =>
-  Number(getValue(item, ["reorder_level", "minimumStock", "minimum_stock", "threshold"], 10));
+// Logs come in two shapes (seed: type/event/related_to, app: action/message), so
+// each entry is sorted into a category by its action, falling back to the seed fields.
+const LOG_CATEGORIES = [
+  ["all", "All"],
+  ["vendor", "Vendors"],
+  ["product", "Products"],
+  ["batch", "Batches"],
+  ["request", "Batch requests"],
+  ["spoilage", "Spoilage & expiry alerts"],
+  ["stock", "Stock alerts"],
+  ["customer", "Customers"],
+  ["system", "System"]
+];
+
+const LOG_ACTIONS = {
+  create_vendor: "vendor",
+  set_vendor_status: "vendor",
+  approve_vendor: "vendor",
+  create_product: "product",
+  update_product: "product",
+  delete_product: "product",
+  create_batch: "batch",
+  receive_batch: "batch",
+  return_batch: "batch",
+  batch_expired: "spoilage",
+  create_demand: "request",
+  create_restock_request: "request",
+  assign_batch: "request",
+  reject_request: "request",
+  create_inventory: "stock",
+  update_inventory: "stock",
+  register_customer: "customer",
+  login_customer: "customer"
+};
+
+// Entries saved without a message get a readable line instead of the raw action name.
+const LOG_TEXT = { login_customer: "A customer signed in" };
+const logText = (log) =>
+  getValue(log, ["message", "event", "description"], "") ||
+  LOG_TEXT[log.action] ||
+  formatStatus(log.action || "activity recorded");
+
+const logCategory = (log) => {
+  const action = log.action || log.metadata?.action;
+  if (LOG_ACTIONS[action]) return LOG_ACTIONS[action];
+  const text = String(getValue(log, ["message", "event"], "")).toLowerCase();
+  if (log.type === "alert") return /spoil|risk|expir/.test(text) ? "spoilage" : "stock";
+  if (/order|customer/.test(text)) return "customer";
+  return { vendor: "vendor", batch: "batch", product: "product" }[log.related_to?.type] || "system";
+};
+
+// App logs written before timestamps were added still carry their time in the ObjectId.
+const logTime = (log) => {
+  const value = getValue(log, ["timestamp", "created_at", "time"], "");
+  if (value) return parseServerDate(value);
+  return /^[0-9a-f]{24}$/.test(log._id || "") ? new Date(parseInt(log._id.slice(0, 8), 16) * 1000) : null;
+};
 
 // The backend stores UTC without a zone ("2026-10-18T05:48:05"); read it as UTC, not local time.
 const parseServerDate = (value) => {
@@ -382,19 +436,9 @@ function Dashboard({ vendors, products, batches, demands, logs, setPage, refresh
                     <FileText size={14} />
                   </div>
                   <div>
-                    <div className="activity-text">
-                      {getValue(
-                        log,
-                        ["message", "action", "event", "description"],
-                        "System activity recorded"
-                      )}
-                    </div>
+                    <div className="activity-text">{logText(log)}</div>
                     <div className="activity-time">
-                      {getValue(
-                        log,
-                        ["created_at", "timestamp", "time"],
-                        ""
-                      )}
+                      {logTime(log)?.toLocaleString() || ""}
                     </div>
                   </div>
                 </div>
@@ -577,80 +621,109 @@ function Vendors({ vendors, search, setSearch, refresh }) {
   );
 }
 
-function Inventory({ inventory, search, setSearch }) {
-  const filtered = inventory.filter((item) =>
-    JSON.stringify(item).toLowerCase().includes(search.toLowerCase())
-  );
+const ALERT_CLASSES = { danger: "alert alert-error", warning: "alert alert-warning", info: "alert alert-info" };
+
+function Inventory({ search, setSearch }) {
+  const { items: shops, reload, message } = useList("/shop-stock", "shops");
+  const [attentionOnly, setAttentionOnly] = useState(false);
+
+  const query = search.toLowerCase();
+  const listed = shops.filter((shop) => {
+    if (attentionOnly && !shop.alerts.some((a) => a.level !== "info")) return false;
+    return [shop.shop_name, ...shop.products.map((p) => p.product_name)].join(" ").toLowerCase().includes(query);
+  });
+  const kg = (value) => `${Number(value || 0)} kg`;
 
   return (
     <PageLayout
       title="Inventory"
-      subtitle="Monitor current stock levels"
+      subtitle="What each shop holds right now, built from its batches"
       search={search}
       setSearch={setSearch}
     >
-      <div className="table-card">
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Vendor</th>
-                <th>Product</th>
-                <th>Quantity</th>
-                <th>Reorder Level</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((item, index) => {
-                const quantity = Number(
-                  getValue(item, ["quantity", "stock", "available_quantity"], 0)
-                );
-                const reorder = reorderLevel(item);
-                const low = quantity <= reorder;
+      {message && (
+        <div className="alert alert-warning">
+          <AlertTriangle size={16} />
+          {message}
+        </div>
+      )}
 
-                return (
-                  <tr key={item._id || item.id || index}>
-                    <td>
-                      {getValue(
-                        item,
-                        ["vendor_id", "vendorId", "vendor"],
-                        "-"
-                      )}
-                    </td>
-                    <td>
-                      {getValue(
-                        item,
-                        ["product_name", "product_id", "productId", "product"],
-                        "-"
-                      )}
-                    </td>
-                    <td>
-                      <strong>{quantity}</strong>
-                    </td>
-                    <td>{reorder}</td>
-                    <td>
-                      <span
-                        className={
-                          low
-                            ? "status status-danger"
-                            : "status status-success"
-                        }
-                      >
-                        {low ? "Low Stock" : "Healthy"}
-                      </span>
-                    </td>
+      <div className="inventory-toolbar">
+        <button className={`secondary-btn small-btn ${attentionOnly ? "toggle-on" : ""}`}
+          onClick={() => setAttentionOnly((v) => !v)}>
+          <AlertTriangle size={13} />
+          {attentionOnly ? "Showing shops that need attention" : "Needs attention only"}
+        </button>
+        <button className="secondary-btn small-btn" onClick={reload}>
+          <RefreshCw size={13} />
+          Refresh
+        </button>
+      </div>
+
+      {listed.length === 0 && (
+        <div className="table-card">
+          <div className="empty-state">{attentionOnly ? "No shop needs attention right now." : "No shops found."}</div>
+        </div>
+      )}
+
+      {listed.map((shop) => (
+        <div className="table-card batch-group" key={shop.vendor_id}>
+          <div className="batch-group-title">
+            <h3>{shop.shop_name}</h3>
+            <span>
+              {[shop.locality && formatStatus(shop.locality), shop.has_fridge ? "Fridge" : "No fridge"]
+                .filter(Boolean).join(" · ")}
+              {" · "}holds {kg(shop.held_kg)}, {kg(shop.sellable_kg)} sellable
+            </span>
+          </div>
+
+          {shop.alerts.length > 0 && (
+            <div className="shop-alerts">
+              {shop.alerts.map((alert, index) => (
+                <div className={ALERT_CLASSES[alert.level]} key={index}>
+                  <AlertTriangle size={15} />
+                  {alert.text}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {shop.products.length === 0 ? (
+            <div className="empty-state">Holds no stock.</div>
+          ) : (
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th>Sellable</th>
+                    <th>Awaiting receipt</th>
+                    <th>Total held</th>
+                    <th>Expired</th>
+                    <th>Next expiry</th>
+                    <th>Forecast</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          {filtered.length === 0 && (
-            <div className="empty-state">No inventory records found.</div>
+                </thead>
+                <tbody>
+                  {shop.products.map((row) => (
+                    <tr key={row.product_name}>
+                      <td><strong>{row.product_name}</strong></td>
+                      <td>
+                        <span className={row.low_stock ? "status status-danger" : ""}>{kg(row.sellable_kg)}</span>
+                      </td>
+                      <td>{row.awaiting_kg ? kg(row.awaiting_kg) : "-"}</td>
+                      <td>{kg(row.held_kg)}</td>
+                      <td>{row.expired_kg ? <span className="status status-danger">{kg(row.expired_kg)}</span> : "-"}</td>
+                      <td>{row.next_expiry_hours === null ? "-" : `in ${row.next_expiry_hours} h`}</td>
+                      <td>{row.forecast_kg === null ? "-" : kg(Number(row.forecast_kg.toFixed(1)))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
-      </div>
+      ))}
     </PageLayout>
   );
 }
@@ -991,47 +1064,70 @@ function Batches({ batches, products, vendors, search, setSearch, refresh }) {
   );
 }
 
+const LOG_RANGES = [["1", "Last 24 hours"], ["7", "Last 7 days"], ["30", "Last 30 days"], ["all", "All time"]];
+
 function Activity({ logs, search, setSearch }) {
-  const filtered = logs.filter((log) =>
-    JSON.stringify(log).toLowerCase().includes(search.toLowerCase())
+  const [category, setCategory] = useState("all");
+  const [range, setRange] = useState("7");
+
+  const since = range === "all" ? 0 : Date.now() - Number(range) * 86400000;
+  const entries = logs.map((log) => ({ log, category: logCategory(log), time: logTime(log) }));
+  const inRange = entries.filter((e) => !since || (e.time && e.time.getTime() >= since));
+  const counts = inRange.reduce((acc, e) => ({ ...acc, [e.category]: (acc[e.category] || 0) + 1 }), {});
+  const listed = inRange.filter(
+    (e) =>
+      (category === "all" || e.category === category) &&
+      logText(e.log).toLowerCase().includes(search.toLowerCase())
   );
 
   return (
     <PageLayout
       title="Activity"
-      subtitle="Backend activity and system logs"
+      subtitle="Everything the system recorded: who did what, and the alerts it raised"
       search={search}
       setSearch={setSearch}
     >
+      <div className="log-filters">
+        <div className="filter-pills" role="group" aria-label="Log type">
+          {LOG_CATEGORIES.map(([id, label]) => (
+            <button
+              key={id}
+              className={`filter-pill ${category === id ? "active" : ""}`}
+              aria-pressed={category === id}
+              onClick={() => setCategory(id)}
+            >
+              {label}
+              <span>{id === "all" ? inRange.length : counts[id] || 0}</span>
+            </button>
+          ))}
+        </div>
+        <select className="ai-vendor-select log-range" value={range} onChange={(e) => setRange(e.target.value)}
+          aria-label="Time range">
+          {LOG_RANGES.map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
+      </div>
+
       <div className="activity-card">
         <div className="activity-list">
-          {filtered.map((log, index) => (
-            <div
-              className="activity-item"
-              key={log._id || log.id || index}
-            >
-              <div className="activity-icon">
-                <FileText size={14} />
+          {listed.map(({ log, category: kind, time }, index) => (
+            <div className="activity-item" key={log._id || index}>
+              <div className={`activity-icon ${log.type === "alert" ? "activity-icon-alert" : ""}`}>
+                {log.type === "alert" ? <AlertTriangle size={14} /> : <FileText size={14} />}
               </div>
               <div>
-                <div className="activity-text">
-                  {getValue(
-                    log,
-                    ["message", "action", "event", "description"],
-                    "Activity recorded"
-                  )}
-                </div>
+                <div className="activity-text">{logText(log)}</div>
                 <div className="activity-time">
-                  {getValue(log, ["created_at", "timestamp", "time"], "")}
+                  {LOG_CATEGORIES.find(([id]) => id === kind)?.[1]}
+                  {time ? ` · ${time.toLocaleString()}` : ""}
                 </div>
               </div>
             </div>
           ))}
         </div>
 
-        {filtered.length === 0 && (
-          <div className="empty-state">No activity found.</div>
-        )}
+        {listed.length === 0 && <div className="empty-state">No activity for this filter.</div>}
       </div>
     </PageLayout>
   );
@@ -1853,7 +1949,6 @@ function App() {
 
   const [vendors, setVendors] = useState([]);
   const [products, setProducts] = useState([]);
-  const [inventory, setInventory] = useState([]);
   const [demands, setDemands] = useState([]);
   const [batches, setBatches] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -1884,14 +1979,6 @@ function App() {
         setBatches(data.batches || []);
       } catch {
         setBatches([]);
-      }
-
-      // One request for every shop's stock rows (not one per shop).
-      try {
-        const data = await request("/inventory");
-        setInventory(data.inventory || []);
-      } catch {
-        setInventory([]);
       }
 
       try {
@@ -2026,13 +2113,7 @@ function App() {
 
           {page === "festivals" && <Festivals search={search} setSearch={setSearch} />}
 
-          {page === "inventory" && (
-            <Inventory
-              inventory={inventory}
-              search={search}
-              setSearch={setSearch}
-            />
-          )}
+          {page === "inventory" && <Inventory search={search} setSearch={setSearch} />}
 
           {page === "demands" && (
             <Demands demands={demands} vendors={vendors} refresh={loadData} />
