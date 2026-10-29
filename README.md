@@ -48,7 +48,6 @@ Every route except `/`, `/login`, `/customers/login`, `/customers/register` and 
 | `batches`            | Manufactured batches with pH, volume, status     |
 | `inventory`          | Current shop inventory records                   |
 | `orders`             | Completed store orders and sales                 |
-| `order_items`        | Individual line items in orders                  |
 | `logs`               | Activity and alert logs (audit trail)            |
 | `restock_requests`   | Pending restock requests from shops              |
 | `predictions`        | ML prediction inference logs                     |

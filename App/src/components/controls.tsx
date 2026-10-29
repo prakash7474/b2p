@@ -71,10 +71,6 @@ export function Button({
   );
 }
 
-export const PrimaryButton = (props: Omit<Parameters<typeof Button>[0], "tone">) => (
-  <Button {...props} tone="primary" />
-);
-
 export const SecondaryButton = (props: Omit<Parameters<typeof Button>[0], "tone">) => (
   <Button {...props} tone="secondary" />
 );
@@ -156,34 +152,6 @@ export function PasswordField({
           color={colors.muted}
         />
       </TouchableOpacity>
-    </View>
-  );
-}
-
-export function SearchField({
-  value,
-  onChangeText,
-  placeholder = "Search...",
-}: {
-  value: string;
-  onChangeText: (text: string) => void;
-  placeholder?: string;
-}) {
-  return (
-    <View style={styles.search}>
-      <MaterialCommunityIcons
-        name="magnify"
-        size={16}
-        color={colors.muted}
-        style={styles.searchIcon}
-      />
-      <FieldInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        autoCapitalize="none"
-        style={styles.searchInput}
-      />
     </View>
   );
 }
@@ -360,20 +328,6 @@ const styles = StyleSheet.create({
     right: 8,
     top: "50%",
     transform: [{ translateY: -12 }],
-  },
-  search: {
-    position: "relative",
-    width: "100%",
-  },
-  searchIcon: {
-    position: "absolute",
-    left: 9,
-    top: "50%",
-    transform: [{ translateY: -12 }],
-    zIndex: 1,
-  },
-  searchInput: {
-    paddingLeft: 31,
   },
   selectControl: {
     borderWidth: 1,

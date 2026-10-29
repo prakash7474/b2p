@@ -1,19 +1,31 @@
 """ML side of the backend: demand forecast and spoilage risk models, their
-feature helpers and routes. Routes register on main's app when main imports this."""
+feature helpers and routes. Routes register on common's app when main imports this."""
+import os
 import math
 import statistics
 import datetime
 import warnings
 from typing import Optional
-from fastapi import Body, Path
+from zoneinfo import ZoneInfo
+from fastapi import Body, Depends, HTTPException, Path
+import httpx
 import joblib
 import numpy as np
 import pandas as pd
 
-from main import (
-    app, BASE_DIR, COLS, _field, _product_key, _batch_remaining, _batch_volume,
-    _batch_threshold, _hours_since, _held_batches, _find_vendor, _vendor_id_values,
-)
+if __package__:
+    from .common import (app, BASE_DIR, COLS, _field, _product_key, _batch_remaining, _batch_volume,
+                         _batch_threshold, _hours_since, _held_batches, _find_vendor, _vendor_id_values,
+                         current_user, require_role, require_vendor, LOCALITY_TIERS, _locality_tier,
+                         _has_fridge, _hours_to_expiry)
+else:
+    from common import (app, BASE_DIR, COLS, _field, _product_key, _batch_remaining, _batch_volume,
+                        _batch_threshold, _hours_since, _held_batches, _find_vendor, _vendor_id_values,
+                        current_user, require_role, require_vendor, LOCALITY_TIERS, _locality_tier,
+                        _has_fridge, _hours_to_expiry)
+
+# Shops run on India time; the server's own clock zone must not move the sales windows.
+SHOP_TZ = ZoneInfo("Asia/Kolkata")
 
 # ------------------------------------------------------------
 # Machine Learning Models (Demand Forecast & Spoilage Risk)
@@ -35,14 +47,15 @@ def load_model_bundle(filenames):
     return None
 
 
+# The training scripts write the plain names, so a retrained model wins over the "(2)" copies.
 demand_bundle = load_model_bundle([
-    "demand_forecast_model (2).pkl",
-    "demand_forecast_model.pkl"
+    "demand_forecast_model.pkl",
+    "demand_forecast_model (2).pkl"
 ])
 
 spoilage_bundle = load_model_bundle([
-    "spoilage_risk_model (2).pkl",
-    "spoilage_risk_model.pkl"
+    "spoilage_risk_model.pkl",
+    "spoilage_risk_model (2).pkl"
 ])
 
 
@@ -55,8 +68,59 @@ def _model_label(product):
     return None
 
 
+WEATHER_MAX_AGE = datetime.timedelta(hours=1)
+_weather_tried_at = None
+
+
+def _refresh_weather():
+    """Store this hour's Open-Meteo forecast (free, no API key) for the shop area."""
+    hour = datetime.datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    response = httpx.get("https://api.open-meteo.com/v1/forecast", timeout=5, params={
+        # Default: Chennai. One reading serves every vendor, like the seeded data did.
+        "latitude": float(os.getenv("WEATHER_LAT", "13.08")),
+        "longitude": float(os.getenv("WEATHER_LON", "80.27")),
+        "hourly": "temperature_2m,relative_humidity_2m,precipitation_probability",
+        "timezone": "UTC",
+        "forecast_days": 1,
+    })
+    response.raise_for_status()
+    hourly = response.json()["hourly"]
+    i = hourly["time"].index(hour.strftime("%Y-%m-%dT%H:%M"))
+    doc = {
+        "forecastFor": hour,
+        "temperatureC": float(hourly["temperature_2m"][i]),
+        "humidityPct": float(hourly["relative_humidity_2m"][i]),
+        # Training data stores rain probability as 0-1; Open-Meteo sends 0-100.
+        "rainProbability": float(hourly["precipitation_probability"][i] or 0) / 100,
+        "source": "open-meteo",
+        "locationGridKey": os.getenv("WEATHER_GRID_KEY", "chennai_central"),
+        "forecastIssuedAt": datetime.datetime.utcnow(),
+    }
+    COLS["weather_forecast"].update_one(
+        {"forecastFor": hour, "source": "open-meteo", "locationGridKey": doc["locationGridKey"]},
+        {"$set": doc}, upsert=True)
+    return doc
+
+
 def _latest_weather():
-    return COLS["weather_forecast"].find_one(sort=[("forecastFor", -1)]) or {}
+    """This hour's weather: the stored reading if fresh, else Open-Meteo (tried at most hourly).
+
+    Falls back to the newest stored reading, then {} (model defaults), when offline.
+    """
+    global _weather_tried_at
+    now = datetime.datetime.utcnow()
+    latest = COLS["weather_forecast"].find_one({"forecastFor": {"$lte": now}}, sort=[("forecastFor", -1)])
+    # Admin "manual_override" rows are daily (forecastFor = midnight) and win for that day.
+    max_age = datetime.timedelta(days=1) if (latest or {}).get("source") == "manual_override" else WEATHER_MAX_AGE
+    if latest and now - latest["forecastFor"] < max_age:
+        return latest
+    if _weather_tried_at is None or now - _weather_tried_at > WEATHER_MAX_AGE:
+        _weather_tried_at = now
+        try:
+            return _refresh_weather()
+        except Exception as e:
+            print(f"[WARN] Weather refresh failed: {e}")
+    return latest or COLS["weather_forecast"].find_one(sort=[("forecastFor", -1)]) or {}
 
 
 def _active_festival_type():
@@ -82,14 +146,14 @@ def _encode(encoder, value, default=0):
 SLOT_HOURS = (8, 18)
 
 def _slot_of(moment):
-    """(local date, 0 = morning / 1 = evening) for a naive UTC timestamp."""
-    local = moment.replace(tzinfo=datetime.timezone.utc).astimezone()
+    """(India date, 0 = morning / 1 = evening) for a naive UTC timestamp."""
+    local = moment.replace(tzinfo=datetime.timezone.utc).astimezone(SHOP_TZ)
     return local.date(), 0 if local.hour < 13 else 1
 
 def _slot_bounds(slot):
-    """(start, end) of a slot as naive UTC: morning is local 00:00-13:00, evening 13:00-24:00."""
+    """(start, end) of a slot as naive UTC: morning is India 00:00-13:00, evening 13:00-24:00."""
     day, window = slot
-    local = lambda hour: datetime.datetime.combine(day, datetime.time()) + datetime.timedelta(hours=hour)
+    local = lambda hour: datetime.datetime.combine(day, datetime.time(), tzinfo=SHOP_TZ) + datetime.timedelta(hours=hour)
     to_utc = lambda moment: moment.astimezone(datetime.timezone.utc).replace(tzinfo=None)
     start, end = (0, 13) if window == 0 else (13, 24)
     return to_utc(local(start)), to_utc(local(end))
@@ -118,16 +182,6 @@ def _demand_shared_context():
 
 
 HISTORY_FEATURES = ["lag1", "lag7", "sameSlot4WeekMean", "rolling7DayMean", "rolling7DayStd", "recentTrend"]
-# Vendors store "commercial"; the model was trained on "commercial_offices".
-LOCALITY_ALIASES = {"commercial": "commercial_offices"}
-
-LOCALITY_TIERS = ["commercial_offices", "institutional", "mixed", "residential_budget", "residential_premium"]
-
-
-def _locality_tier(value):
-    """A known locality tier for ``value`` (aliases allowed), else None."""
-    tier = LOCALITY_ALIASES.get(value, value)
-    return tier if tier in LOCALITY_TIERS else None
 
 
 def _history_features(series):
@@ -380,25 +434,30 @@ def _forecast_response(vendor, ctx):
 
 
 @app.get("/vendors/{vendor_id}/demand-forecast")
-def get_demand_forecast(vendor_id: str = Path(...)):
+def get_demand_forecast(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    require_vendor(user, vendor_id)
     if not demand_bundle:
-        return {"error": "Demand model not loaded"}
+        raise HTTPException(status_code=503, detail="Demand model not loaded")
     vendor = _find_vendor(vendor_id)
     if not vendor:
-        return {"error": "Vendor not found"}
+        raise HTTPException(status_code=404, detail="Vendor not found")
     return _forecast_response(vendor, _demand_shared_context())
 
 
 @app.get("/demand-forecast")
-def get_all_demand_forecasts(vendor_id: Optional[str] = None):
+def get_all_demand_forecasts(vendor_id: Optional[str] = None, user: dict = Depends(current_user)):
+    if vendor_id:
+        require_vendor(user, vendor_id)
+    else:
+        require_role(user)
     if not demand_bundle:
-        return {"error": "Demand model not loaded"}
+        raise HTTPException(status_code=503, detail="Demand model not loaded")
 
     ctx = _demand_shared_context()
     if vendor_id:
         vendor = _find_vendor(vendor_id)
         if not vendor:
-            return {"error": "Vendor not found"}
+            raise HTTPException(status_code=404, detail="Vendor not found")
         return _forecast_response(vendor, ctx)
 
     results = []
@@ -408,26 +467,44 @@ def get_all_demand_forecasts(vendor_id: Optional[str] = None):
     return {"count": len(results), "forecast": results}
 
 
+# POST /vendors/{vendor_id}/locality — admin corrects a shop's area, which drives its forecast.
+# Body: {"locality_tier": "residential_budget"}
+@app.post("/vendors/{vendor_id}/locality")
+def set_vendor_locality(vendor_id: str = Path(...), data: dict = Body(...), user: dict = Depends(current_user)):
+    require_role(user)
+    locality = _locality_tier(data.get("locality_tier"))
+    if not locality:
+        raise HTTPException(status_code=400, detail=f"locality_tier must be one of: {', '.join(LOCALITY_TIERS)}")
+    vendor = _find_vendor(vendor_id)
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    # Write both spellings: seed vendors carry localityTier, which the forecast reads first.
+    COLS["vendors"].update_one({"_id": vendor["_id"]}, {"$set": {
+        "locality_tier": locality, "localityTier": locality, "updated_at": datetime.datetime.utcnow()}})
+    return {"message": "Locality updated", "vendor_id": vendor.get("vendor_id"), "locality_tier": locality}
+
+
 # POST /festival-calendar — admin adds (or corrects) a festival window that the
 # demand model's isFestivalWindow / festivalTypeEnc features read.
 # Body: {"date": "2027-01-15", "festivalType": "harvestFestival", "windowDays": 4, "festivalName": "Pongal", "region": "Tamil Nadu"}
 @app.post("/festival-calendar")
-def add_festival(data: dict = Body(...)):
+def add_festival(data: dict = Body(...), user: dict = Depends(current_user)):
+    require_role(user)
     if not demand_bundle:
-        return {"error": "Demand model not loaded"}
+        raise HTTPException(status_code=503, detail="Demand model not loaded")
     known = [str(c) for c in demand_bundle["festival_encoder"].classes_ if c != "none"]
     festival_type = _field(data, "festivalType", "festival_type")
     if festival_type not in known:
-        return {"error": f"festivalType must be one of: {', '.join(known)} (the types the model was trained on)"}
+        raise HTTPException(status_code=400, detail=f"festivalType must be one of: {', '.join(known)} (the types the model was trained on)")
     try:
         day = datetime.date.fromisoformat(str(data.get("date", "")))
         window_days = int(_field(data, "windowDays", "window_days", default=1))
     except (TypeError, ValueError):
-        return {"error": "date must be YYYY-MM-DD and windowDays a whole number"}
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD and windowDays a whole number")
     if not 1 <= window_days <= 31:  # _active_festival_type looks back 31 days
-        return {"error": "windowDays must be between 1 and 31"}
-    # Local midnight in UTC, matching how the rest of the backend stores times.
-    start = datetime.datetime.combine(day, datetime.time()).astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        raise HTTPException(status_code=400, detail="windowDays must be between 1 and 31")
+    # India midnight in UTC, matching how the rest of the backend stores times.
+    start = datetime.datetime.combine(day, datetime.time(), tzinfo=SHOP_TZ).astimezone(datetime.timezone.utc).replace(tzinfo=None)
     doc = {"date": start, "festivalType": festival_type, "windowDays": window_days,
            "festivalName": _field(data, "festivalName", "name", default=""),
            "region": data.get("region", "Tamil Nadu"), "updated_at": datetime.datetime.utcnow()}
@@ -437,7 +514,8 @@ def add_festival(data: dict = Body(...)):
 
 # GET /festival-calendar — every stored festival window, soonest first.
 @app.get("/festival-calendar")
-def list_festivals():
+def list_festivals(user: dict = Depends(current_user)):
+    require_role(user)
     festivals = list(COLS["festival_calendar"].find().sort("date", 1))
     for festival in festivals:
         festival["_id"] = str(festival["_id"])
@@ -457,36 +535,6 @@ RISK_ACTIONS = {
     "Low": "Normal shelf rotation",
 }
 STORAGE_ALIASES = {"refrigerated": "fridge"}
-
-
-def _shelf_life_hours(batch, has_fridge):
-    """Product shelf life for the vendor's storage: fridge vs room temperature."""
-    keys = ("shelf_life_fridge_hrs", "shelf_life_hours") if has_fridge else ("shelf_life_ambient_hrs",)
-    name = _product_key(_field(batch, "product_name", "product_id"))
-    for product in COLS["products"].find():
-        same = product.get("product_id") == batch.get("product_id") or _product_key(product.get("product_name")) == name
-        if same and _field(product, *keys) is not None:
-            return float(_field(product, *keys))
-    # shortcut: catalog has no shelf life for this product; typical idli batter values
-    return 72.0 if has_fridge else 24.0
-
-
-def _has_fridge(vendor):
-    return 1 if _field(vendor, "hasRefrigerator", "has_refrigerator", default=True) else 0
-
-
-def _hours_to_expiry(vendor, batch):
-    """Shelf life left in hours; zero or below means the batch has expired."""
-    elapsed = _hours_since(batch.get("created_at")) or 0.0
-    expires = batch.get("expires_at")
-    if isinstance(expires, datetime.datetime):  # older batches carry a fixed expiry
-        return (expires - datetime.datetime.utcnow()).total_seconds() / 3600
-    if _field(batch, "hours_to_expiry", "hoursToExpiry") is not None:
-        return float(_field(batch, "hours_to_expiry", "hoursToExpiry")) - elapsed
-    manufactured = _field(batch, "manufactured_at", "mfgTimestamp")
-    hours_mfg = _hours_since(manufactured) if manufactured else \
-        float(_field(batch, "hours_since_manufacture", "hoursSinceManufacture", default=0)) + elapsed
-    return _shelf_life_hours(batch, _has_fridge(vendor)) - hours_mfg
 
 
 def _spoilage_features(vendor, batch, weather):
@@ -569,15 +617,17 @@ def _batch_evaluation(vendor, batch, weather):
         "risk_score": score,
         "risk_label": label,
         "probabilities": {k: round(v, 3) for k, v in prob.items()},
-        "action": RISK_ACTIONS[label],
+        # Sales of expired stock are refused, so the advice must not say "keep selling".
+        "action": "Expired: do not sell, return or discard" if row["expired"] else RISK_ACTIONS[label],
     }
 
 
 @app.get("/vendors/{vendor_id}/batches")
-def get_vendor_batches(vendor_id: str = Path(...)):
+def get_vendor_batches(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    require_vendor(user, vendor_id)
     vendor = _find_vendor(vendor_id)
     if not vendor:
-        return {"error": "Vendor not found"}
+        raise HTTPException(status_code=404, detail="Vendor not found")
     weather = _latest_weather()
     batches = [_batch_evaluation(vendor, b, weather) for b in _held_batches(vendor)]
     batches.sort(key=lambda b: b["remaining_kg"] - b["threshold_kg"])
@@ -590,12 +640,13 @@ def get_vendor_batches(vendor_id: str = Path(...)):
 
 
 @app.get("/vendors/{vendor_id}/spoilage-risk")
-def get_vendor_spoilage_risk(vendor_id: str = Path(...)):
+def get_vendor_spoilage_risk(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    require_vendor(user, vendor_id)
     if not spoilage_bundle:
-        return {"error": "Spoilage model not loaded"}
+        raise HTTPException(status_code=503, detail="Spoilage model not loaded")
     vendor = _find_vendor(vendor_id)
     if not vendor:
-        return {"error": "Vendor not found"}
+        raise HTTPException(status_code=404, detail="Vendor not found")
 
     weather = _latest_weather()
     evaluations = [_batch_evaluation(vendor, b, weather) for b in _held_batches(vendor)]

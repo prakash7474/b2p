@@ -19,6 +19,10 @@ REFIT_ON_ALL_DATA = True
 df = pd.read_csv(DATA_FILE)
 df["date"] = pd.to_datetime(df["date"])
 df = df.sort_values(["date", "window_order", "vendorId", "productId"]).reset_index(drop=True)
+# Rows where the shop sold out record sales capped by stock, not real demand (about half
+# of them); learning from those teaches the model to under-forecast.
+print(f"Dropping {int(df['stockoutFlag'].sum())} stock-out rows of {len(df)}")
+df = df[df["stockoutFlag"] == 0].reset_index(drop=True)
 
 locality_encoder = LabelEncoder()
 festival_encoder = LabelEncoder()

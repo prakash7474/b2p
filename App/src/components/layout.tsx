@@ -9,7 +9,7 @@ import {
   type ScrollViewProps,
 } from "react-native";
 
-import { colors, fonts, radius, shadow } from "@/src/theme";
+import { colors, fonts, radius } from "@/src/theme";
 
 type ScreenProps = {
   title: string;
@@ -259,4 +259,3 @@ export const styles = StyleSheet.create({
   },
 });
 
-export const cardShadow = shadow;

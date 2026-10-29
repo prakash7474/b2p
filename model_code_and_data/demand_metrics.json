@@ -1,22 +1,22 @@
 {
   "model": {
-    "MAE": 4.667,
-    "RMSE": 6.461,
-    "WAPE_%": 15.69,
-    "Bias": -0.256,
-    "R2": 0.833
+    "MAE": 4.252,
+    "RMSE": 5.975,
+    "WAPE_%": 13.28,
+    "Bias": -0.328,
+    "R2": 0.872
   },
   "baseline": {
-    "MAE": 5.724,
-    "RMSE": 7.935,
-    "WAPE_%": 19.24,
-    "Bias": 0.249,
-    "R2": 0.748
+    "MAE": 5.608,
+    "RMSE": 8.013,
+    "WAPE_%": 17.51,
+    "Bias": -2.236,
+    "R2": 0.77
   },
   "safety_stock": {
-    "Combo_Pack": 4.8,
-    "Dosa_Batter": 8.3,
-    "Idly_Batter": 10.2
+    "Combo_Pack": 4.1,
+    "Dosa_Batter": 7.4,
+    "Idly_Batter": 9.7
   },
   "best_params": {
     "subsample": 0.85,

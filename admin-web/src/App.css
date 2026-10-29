@@ -509,21 +509,6 @@ button:disabled {
   font-size: 12px;
 }
 
-.page-heading-small {
-  margin: 28px 0 15px;
-}
-
-.page-heading-small h2 {
-  margin: 0;
-  font-size: 18px;
-}
-
-.page-heading-small p {
-  margin: 5px 0;
-  color: var(--muted);
-  font-size: 11px;
-}
-
 .search-box {
   position: relative;
   width: 240px;
@@ -932,11 +917,6 @@ tbody tr:last-child td {
   font-size: 10px;
 }
 
-.order-highlight {
-  font-weight: 700;
-  color: var(--primary-dark);
-}
-
 .ai-empty {
   margin-top: 18px;
   min-height: 280px;
@@ -975,21 +955,6 @@ tbody tr:last-child td {
 .danger-empty .ai-empty-icon {
   background: var(--danger-bg);
   color: var(--danger);
-}
-
-.probability-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 9px;
-  min-width: 110px;
-}
-
-.risk-action {
-  max-width: 300px;
-  line-height: 1.45;
-  font-size: 10px;
 }
 
 .spin {

@@ -1,7 +1,7 @@
 import { type ReactNode } from "react";
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 
-import { colors, fonts, radius, shadow, textStyles, toneColors, type StatusTone } from "@/src/theme";
+import { colors, fonts, radius, shadow, textStyles } from "@/src/theme";
 
 /** White bordered card used across the admin dashboard. */
 export function Card({
@@ -81,42 +81,6 @@ export function InfoRow({
   );
 }
 
-export function StatusChip({
-  tone,
-  children,
-}: {
-  tone: StatusTone;
-  children: ReactNode;
-}) {
-  const palette = toneColors[tone];
-  return (
-    <View style={[styles.chip, { backgroundColor: palette.bg }]}>
-      <Text style={[styles.chipText, { color: palette.fg }]}>{children}</Text>
-    </View>
-  );
-}
-
-/** Icon + count row for compact lists (System Snapshot style). */
-export function SnapshotRow({
-  icon,
-  label,
-  value,
-}: {
-  icon: ReactNode;
-  label: string;
-  value: ReactNode;
-}) {
-  return (
-    <View style={styles.infoRow}>
-      <View style={styles.snapshotLeft}>
-        {icon}
-        <Text style={styles.snapshotLabel}>{label}</Text>
-      </View>
-      <Text style={styles.snapshotValue}>{value}</Text>
-    </View>
-  );
-}
-
 export function EmptyState({
   icon,
   title,
@@ -178,10 +142,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  statIconInner: {
-    alignItems: "center",
-    justifyContent: "center",
-  },
   statLabel: {
     marginTop: 12,
     fontSize: 12,
@@ -232,33 +192,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     textAlign: "right",
     flexShrink: 1,
-  },
-  chip: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: radius.pill,
-  },
-  chipText: {
-    fontSize: 9,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-  },
-  snapshotLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  snapshotLabel: {
-    fontSize: 11,
-    color: colors.muted,
-    fontFamily: fonts.regular,
-  },
-  snapshotValue: {
-    fontSize: 13,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-    color: colors.text,
   },
   empty: {
     minHeight: 170,

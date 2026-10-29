@@ -8,6 +8,6 @@ numpy
 pandas
 scikit-learn>=1.6.0
 xgboost>=2.0.0
+matplotlib
 httpx
 pytest
-requests

@@ -99,20 +99,6 @@ export function formatStatus(status: unknown): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Reads the first present key from a loosely typed API object. */
-export function pick(
-  obj: Record<string, unknown> | null | undefined,
-  keys: string[],
-  fallback: string | number = "",
-): string | number {
-  if (!obj) return fallback;
-  for (const key of keys) {
-    const value = obj[key];
-    if (value !== undefined && value !== null && value !== "") return value as string | number;
-  }
-  return fallback;
-}
-
 export const textStyles = {
   title: {
     fontSize: 25,

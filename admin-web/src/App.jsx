@@ -296,7 +296,7 @@ function Dashboard({
 
   const pendingDemands = demands.filter((d) => {
     const value = String(getValue(d, ["status"])).toLowerCase();
-    return !["synchronized", "completed", "cancelled"].includes(value);
+    return !["synchronized", "completed", "cancelled", "rejected"].includes(value);
   }).length;
 
   return (
@@ -1721,26 +1721,13 @@ function App() {
         setBatches([]);
       }
 
-      const inventoryResults = await Promise.all(
-        vendorList.map(async (vendor) => {
-          const id = getValue(
-            vendor,
-            ["vendor_id", "vendorId", "id", "_id"],
-            ""
-          );
-
-          if (!id) return [];
-
-          try {
-            const data = await request(`/vendors/${id}/inventory`);
-            return Array.isArray(data) ? data : data.inventory || [];
-          } catch {
-            return [];
-          }
-        })
-      );
-
-      setInventory(inventoryResults.flat());
+      // One request for every shop's stock rows (not one per shop).
+      try {
+        const data = await request("/inventory");
+        setInventory(data.inventory || []);
+      } catch {
+        setInventory([]);
+      }
 
       try {
         const data = await request("/restock-requests");
