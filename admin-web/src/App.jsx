@@ -663,7 +663,9 @@ const REQUEST_LABELS = {
   rejected: "Rejected"
 };
 
-function Demands({ demands, refresh }) {
+const PAST_REQUEST_DAYS = 3;
+
+function Demands({ demands, vendors, refresh }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
 
@@ -690,6 +692,71 @@ function Demands({ demands, refresh }) {
   const sorted = [...demands].sort((a, b) =>
     String(b.created_at || "").localeCompare(String(a.created_at || ""))
   );
+  const queued = sorted.filter((d) => getValue(d, ["status"]) === "pending");
+  // Batter is past use after a few days, so older decisions are not worth listing.
+  const since = Date.now() - PAST_REQUEST_DAYS * 86400000;
+  const past = sorted.filter(
+    (d) => getValue(d, ["status"]) !== "pending" && parseServerDate(d.created_at).getTime() >= since
+  );
+
+  const table = (rows, withActions) => (
+    <div className="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Requested</th>
+            <th>Vendor</th>
+            <th>Product</th>
+            <th>Quantity</th>
+            <th>Status</th>
+            {withActions && <th>Actions</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((demand, index) => {
+            const id = getValue(demand, ["_id", "id", "demand_id"], "");
+            const value = getValue(demand, ["status"], "pending");
+            const item = demand.items?.[0] || {};
+            return (
+              <tr key={id || index}>
+                <td>{formatDate(demand.created_at)}</td>
+                <td><strong>{vendorName(vendors, getValue(demand, ["vendor_id", "vendorId"], "-"))}</strong></td>
+                <td>{getValue(item, ["product_name", "product_id"], demand.product_name || "-")}</td>
+                <td>{getValue(item, ["quantity"], demand.requested_quantity_kg ?? "-")} kg</td>
+                <td>
+                  <span className={statusClass(value)}>
+                    {REQUEST_LABELS[value] || formatStatus(value)}
+                  </span>
+                </td>
+                {withActions && (
+                  <td>
+                    <div className="action-buttons">
+                      <button
+                        className="primary-btn small-btn"
+                        disabled={busy === id}
+                        onClick={() => act(demand, "confirm")}
+                      >
+                        <CheckCircle2 size={13} />
+                        {item.batch_id ? "Assign" : "Confirm"}
+                      </button>
+                      <button
+                        className="secondary-btn small-btn danger-btn"
+                        disabled={busy === id}
+                        onClick={() => act(demand, "reject")}
+                      >
+                        <X size={13} />
+                        Reject
+                      </button>
+                    </div>
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 
   return (
     <div>
@@ -706,78 +773,29 @@ function Demands({ demands, refresh }) {
       )}
 
       <div className="table-card">
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Requested</th>
-                <th>Vendor</th>
-                <th>Batch</th>
-                <th>Product</th>
-                <th>Quantity</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
+        {queued.length === 0 ? (
+          <div className="empty-state">
+            <FileText size={28} />
+            <h3>No batch requests right now</h3>
+            <p>New requests from vendors appear here for you to assign or reject.</p>
+          </div>
+        ) : (
+          table(queued, true)
+        )}
+      </div>
 
-            <tbody>
-              {sorted.map((demand, index) => {
-                const id = getValue(demand, ["_id", "id", "demand_id"], "");
-                const value = getValue(demand, ["status"], "pending");
-                const item = demand.items?.[0] || {};
-                const isBatch = Boolean(item.batch_id);
+      <section className="dashboard-section past-requests">
+        <h2>Past Batch Requests</h2>
+        <p>Decisions from the last {PAST_REQUEST_DAYS} days</p>
 
-                return (
-                  <tr key={id || index}>
-                    <td>{formatDate(demand.created_at)}</td>
-                    <td>{getValue(demand, ["vendor_id", "vendorId"], "-")}</td>
-                    <td>{item.batch_id || "-"}</td>
-                    <td>{getValue(item, ["product_name", "product_id"], demand.product_name || "-")}</td>
-                    <td>{getValue(item, ["quantity"], demand.requested_quantity_kg ?? "-")} kg</td>
-                    <td>
-                      <span className={statusClass(value)}>
-                        {REQUEST_LABELS[value] || formatStatus(value)}
-                      </span>
-                    </td>
-                    <td>
-                      {value === "pending" ? (
-                        <div className="action-buttons">
-                          <button
-                            className="primary-btn small-btn"
-                            disabled={busy === id}
-                            onClick={() => act(demand, "confirm")}
-                          >
-                            <CheckCircle2 size={13} />
-                            {isBatch ? "Assign" : "Confirm"}
-                          </button>
-                          <button
-                            className="secondary-btn small-btn"
-                            disabled={busy === id}
-                            onClick={() => act(demand, "reject")}
-                          >
-                            <X size={13} />
-                            Reject
-                          </button>
-                        </div>
-                      ) : (
-                        "-"
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          {demands.length === 0 && (
-            <div className="empty-state">
-              <FileText size={28} />
-              <h3>No batch requests</h3>
-              <p>Vendors request batches from their Forecast screen.</p>
-            </div>
+        <div className="table-card">
+          {past.length === 0 ? (
+            <div className="empty-state">No requests in the last {PAST_REQUEST_DAYS} days.</div>
+          ) : (
+            table(past, false)
           )}
         </div>
-      </div>
+      </section>
     </div>
   );
 }
@@ -2017,7 +2035,7 @@ function App() {
           )}
 
           {page === "demands" && (
-            <Demands demands={demands} refresh={loadData} />
+            <Demands demands={demands} vendors={vendors} refresh={loadData} />
           )}
 
           {page === "forecast" && <DemandForecast vendors={vendors} />}

@@ -349,6 +349,10 @@ button:disabled {
   margin-top: 14px;
 }
 
+.past-requests {
+  margin-top: 32px;
+}
+
 .table-card-title {
   display: flex;
   flex-wrap: wrap;
