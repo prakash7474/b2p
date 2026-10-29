@@ -273,6 +273,39 @@ button:disabled {
   background: #2fb36b;
 }
 
+.topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border: 2px solid var(--primary);
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.topbar-btn:hover:not(:disabled) {
+  background: white;
+}
+
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
 .signout-btn {
   display: inline-flex;
   align-items: center;
@@ -326,35 +359,8 @@ button:disabled {
   color: white;
   font-size: 15px;
 }
-
-.refresh-btn {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 9px 13px;
-  border: 2px solid var(--outline);
-  background: transparent;
-  border-radius: 9999px;
-  color: var(--primary);
-  font-size: 14px;
-}
-
-.refresh-btn:hover {
-  background: #f2f2f2;
-}
-
-/* The dashboard's refresh button sits on the green band. */
 .billboard-alt {
   color: var(--teal);
-}
-
-.dashboard-header .refresh-btn {
-  border-color: white;
-  color: white;
-}
-
-.dashboard-header .refresh-btn:hover {
-  background: var(--sidebar-hover);
 }
 
 .dashboard-header-actions {

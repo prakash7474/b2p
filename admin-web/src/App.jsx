@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 import {
   LayoutDashboard,
@@ -304,7 +304,7 @@ function Sidebar({ page, setPage, open, setOpen, demands }) {
   );
 }
 
-function Topbar({ title, setOpen, onSignOut }) {
+function Topbar({ title, setOpen, onRefresh, refreshing, onSignOut }) {
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -323,6 +323,10 @@ function Topbar({ title, setOpen, onSignOut }) {
           <span className="online-dot" />
           System online
         </span>
+        <button className="topbar-btn" onClick={onRefresh} disabled={refreshing}>
+          <RefreshCw size={14} className={refreshing ? "spin" : ""} />
+          {refreshing ? "Refreshing" : "Refresh"}
+        </button>
         <button className="signout-btn" onClick={onSignOut}>
           <LogOut size={14} />
           Sign out
@@ -369,8 +373,8 @@ const ATTENTION_LABELS = {
 // Only alerts and decisions belong on the dashboard; the rest stays on the Activity page.
 const DASHBOARD_LOG_CATEGORIES = ["spoilage", "stock", "request", "vendor"];
 
-function Dashboard({ vendors, demands, logs, setPage, openInventory, refresh }) {
-  const { items: summary, loaded, reload } = useList("/dashboard-summary", null);
+function Dashboard({ vendors, demands, logs, setPage, openInventory }) {
+  const { items: summary, loaded } = useList("/dashboard-summary", null);
   const ready = loaded && summary.demand;
 
   const pendingVendors = vendors.filter(
@@ -417,10 +421,6 @@ function Dashboard({ vendors, demands, logs, setPage, openInventory, refresh }) 
               <ChevronRight size={16} />
             </button>
           )}
-          <button className="refresh-btn" onClick={() => { refresh(); reload(); }}>
-            <RefreshCw size={15} />
-            Refresh
-          </button>
         </div>
       </div>
 
@@ -708,7 +708,7 @@ function Vendors({ vendors, search, setSearch, refresh }) {
 const ALERT_CLASSES = { danger: "alert alert-error", warning: "alert alert-warning", info: "alert alert-info" };
 
 function Inventory({ search, setSearch, initialAttention = false }) {
-  const { items: shops, loaded, reload, message } = useList("/shop-stock", "shops");
+  const { items: shops, loaded, message } = useList("/shop-stock", "shops");
   const [attentionOnly, setAttentionOnly] = useState(initialAttention);
 
   const query = search.toLowerCase();
@@ -737,10 +737,6 @@ function Inventory({ search, setSearch, initialAttention = false }) {
           onClick={() => setAttentionOnly((v) => !v)}>
           <AlertTriangle size={13} />
           {attentionOnly ? "Showing shops that need attention" : "Needs attention only"}
-        </button>
-        <button className="secondary-btn small-btn" onClick={reload}>
-          <RefreshCw size={13} />
-          Refresh
         </button>
       </div>
 
@@ -1884,8 +1880,12 @@ function Products({ products, search, setSearch, refresh }) {
   );
 }
 
+// Bumped by the top bar's Refresh; pages that load their own data reload on it.
+const RefreshContext = createContext(0);
+
 // Loads one admin list endpoint for a page that owns its data.
 function useList(url, key) {
+  const refreshTick = useContext(RefreshContext);
   const [items, setItems] = useState([]);
   const [message, setMessage] = useState("");
   const [version, setVersion] = useState(0);
@@ -1899,7 +1899,7 @@ function useList(url, key) {
     return () => {
       live = false;
     };
-  }, [url, key, version]);
+  }, [url, key, version, refreshTick]);
   return { items, loaded, reload: () => setVersion((v) => v + 1), message, setMessage };
 }
 
@@ -2049,6 +2049,16 @@ function App() {
 
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // One Refresh for every page: shared lists reload here, page-owned lists via RefreshContext.
+  const refreshAll = async () => {
+    setRefreshing(true);
+    setRefreshTick((tick) => tick + 1);
+    await loadData();
+    setRefreshing(false);
+  };
 
   // Only the first load shows the full-screen loader; refreshes keep the page
   // (and its success/error message) mounted.
@@ -2166,8 +2176,15 @@ function App() {
       />
 
       <main className="main">
-        <Topbar title={pageTitle} setOpen={setMobileOpen} onSignOut={signOut} />
+        <Topbar
+          title={pageTitle}
+          setOpen={setMobileOpen}
+          onRefresh={refreshAll}
+          refreshing={refreshing}
+          onSignOut={signOut}
+        />
 
+        <RefreshContext.Provider value={refreshTick}>
         <div className="content">
           {page === "dashboard" && (
             <Dashboard
@@ -2179,7 +2196,6 @@ function App() {
                 setInventoryAttention(attention);
                 setPage("inventory");
               }}
-              refresh={loadData}
             />
           )}
 
@@ -2234,6 +2250,7 @@ function App() {
             />
           )}
         </div>
+        </RefreshContext.Provider>
       </main>
     </div>
   );
