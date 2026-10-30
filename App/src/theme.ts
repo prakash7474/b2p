@@ -15,7 +15,8 @@ export const colors = {
 
   text: "#333333",
   muted: "#5c5c5c",
-  background: "#ffffff",
+  // Warm cream page ground, same as the admin panel; cards stay white (surface).
+  background: "#f7f1df",
   surface: "#ffffff",
   border: "#035542",
   line: "#cfdcd8",
