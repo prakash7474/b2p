@@ -6,8 +6,8 @@ import { StyleSheet, Text, View } from "react-native";
 import { Card, EmptyState, SectionTitle, StatCard, StatGrid } from "@/src/components/cards";
 import { LoadingScreen, Screen } from "@/src/components/layout";
 import { Button, SecondaryButton } from "@/src/components/controls";
-import { AlertBox, BarMeter, StatusPill } from "@/src/components/status";
-import { api, type ActivityLog, type RiskReport } from "@/src/lib/api";
+import { AlertBox, BarMeter, RiskBadge } from "@/src/components/status";
+import { api, madeLabel, type ActivityLog, type RiskReport } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
 import { colors, fonts, radius, riskColor } from "@/src/theme";
 
@@ -165,7 +165,7 @@ export default function DashboardScreen() {
                   <View style={styles.rowMain}>
                     <Text style={styles.rowTitle}>{String(batch.product_name ?? "Batch")}</Text>
                     <Text style={styles.rowMeta}>
-                      Batch {id} · {Number(batch.remaining_kg ?? 0)} kg
+                      {[`${Number(batch.remaining_kg ?? 0)} kg`, madeLabel(batch.manufactured_at)].filter(Boolean).join(" · ")}
                     </Text>
                   </View>
                   <Button
@@ -194,9 +194,12 @@ export default function DashboardScreen() {
                 <Text style={styles.rowTitle}>Overall shop risk</Text>
                 <BarMeter percent={aggregate} color={riskColor(aggregateLabel)} />
               </View>
-              <Text style={[styles.aggregateValue, { color: riskColor(aggregateLabel) }]}>
-                {aggregate.toFixed(1)}% {aggregateLabel}
-              </Text>
+              <View style={styles.aggregateSide}>
+                <Text style={[styles.aggregateValue, { color: riskColor(aggregateLabel) }]}>
+                  {aggregate.toFixed(1)}%
+                </Text>
+                {aggregateLabel ? <RiskBadge label={aggregateLabel} /> : null}
+              </View>
             </View>
           ) : null}
 
@@ -219,10 +222,10 @@ export default function DashboardScreen() {
                     <View style={styles.rowMain}>
                       <Text style={styles.rowTitle}>{String(batch.product_name ?? "Batch")}</Text>
                       <Text style={styles.rowMeta}>
-                        Batch {String(batch.batch_id)} · {Number(batch.remaining_kg ?? 0)} kg
+                        {[`${Number(batch.remaining_kg ?? 0)} kg`, madeLabel(batch.manufactured_at)].filter(Boolean).join(" · ")}
                       </Text>
                     </View>
-                    <StatusPill status={label === "Low" ? "active" : label.toLowerCase()} label={`${label} Risk`} />
+                    <RiskBadge label={batch.expired ? "Expired" : label} />
                   </View>
                   <BarMeter
                     label="Risk score"
@@ -301,10 +304,13 @@ const styles = StyleSheet.create({
   aggregateRow: {
     backgroundColor: colors.tableHeader,
   },
+  aggregateSide: {
+    alignItems: "flex-end",
+    gap: 6,
+  },
   aggregateValue: {
-    fontSize: 16,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
+    fontSize: 26,
+    fontFamily: fonts.black,
   },
   riskRow: {
     padding: 14,

@@ -6,10 +6,10 @@ import { StyleSheet, Text, View } from "react-native";
 import { Card, EmptyState, StatCard, StatGrid } from "@/src/components/cards";
 import { Button, FieldInput, SecondaryButton } from "@/src/components/controls";
 import { LoadingScreen, Screen } from "@/src/components/layout";
-import { AlertBox, BarMeter } from "@/src/components/status";
-import { api, type VendorBatch } from "@/src/lib/api";
+import { AlertBox, BarMeter, RiskBadge } from "@/src/components/status";
+import { api, madeLabel, type VendorBatch } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
-import { colors, fonts, radius } from "@/src/theme";
+import { colors, fonts } from "@/src/theme";
 
 type Notice = { type: "success" | "error"; text: string } | null;
 
@@ -132,8 +132,8 @@ export default function BatchesScreen() {
         <AlertBox
           type="error"
           message={`${expired.length} batch${expired.length === 1 ? " has" : "es have"} expired (${expired
-            .map((b) => b.product_name)
-            .join(", ")}). They can no longer be sold; return them below.`}
+            .map((b) => [b.product_name, madeLabel(b.manufactured_at)].filter(Boolean).join(", "))
+            .join("; ")}). They can no longer be sold; return them below.`}
         />
       ) : null}
 
@@ -188,11 +188,16 @@ export default function BatchesScreen() {
                   <View style={styles.headerText}>
                     <Text style={styles.title}>{String(batch.product_name ?? "Batch")}</Text>
                     <Text style={styles.meta}>
-                      {assigned
-                        ? "On its way: confirm when it arrives"
-                        : batch.expired
-                          ? "Expired"
-                          : `${Math.round(hoursLeft)} h of shelf life left`}
+                      {[
+                        madeLabel(batch.manufactured_at),
+                        assigned
+                          ? "on its way, confirm when it arrives"
+                          : batch.expired
+                            ? "expired"
+                            : `${Math.round(hoursLeft)} h shelf life left`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
                     </Text>
                   </View>
                   {batch.expired ? (
@@ -256,28 +261,6 @@ export default function BatchesScreen() {
   );
 }
 
-const RISK_BADGES: Record<string, { label: string; fg: string; bg: string }> = {
-  High: { label: "High risk", fg: "#fff", bg: colors.danger },
-  Expired: { label: "Expired", fg: "#fff", bg: colors.danger },
-  Medium: { label: "Medium risk", fg: colors.warning, bg: colors.butter },
-  Low: { label: "Low risk", fg: colors.primary, bg: colors.successBg },
-};
-
-/** Spoilage risk as a filled badge, so a risky batch stands out at a glance. */
-function RiskBadge({ label }: { label: string }) {
-  const badge = RISK_BADGES[label] ?? RISK_BADGES.Low;
-  return (
-    <View style={[styles.badge, { backgroundColor: badge.bg }]}>
-      <MaterialCommunityIcons
-        name={label === "Low" ? "shield-check-outline" : "alert-octagon-outline"}
-        size={15}
-        color={badge.fg}
-      />
-      <Text style={[styles.badgeText, { color: badge.fg }]}>{badge.label}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   row: {
     padding: 16,
@@ -307,18 +290,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
-  },
-  badge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: radius.pill,
-  },
-  badgeText: {
-    fontSize: 13,
-    fontFamily: fonts.bold,
   },
   saleRow: {
     flexDirection: "row",

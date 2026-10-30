@@ -1215,6 +1215,11 @@ function Activity({ logs, search, setSearch }) {
   );
 }
 
+// Selector value that means "every live shop" on the forecast and risk pages.
+const ALL_SHOPS = "all";
+const liveVendors = (vendors) =>
+  vendors.filter((v) => ["active", "approved"].includes(String(vendorStatus(v)).toLowerCase()));
+
 function VendorSelect({ vendors, vendorId, onChange, onRefresh, loading, label, description, refreshLabel }) {
   return (
     <div className="ai-selector-card">
@@ -1225,12 +1230,12 @@ function VendorSelect({ vendors, vendorId, onChange, onRefresh, loading, label, 
 
       <div className="ai-selector-controls">
         <select className="ai-vendor-select" value={vendorId} onChange={(e) => onChange(e.target.value)}>
-          <option value="">Select vendor</option>
+          <option value={ALL_SHOPS}>All shops</option>
           {vendors.map((vendor, index) => {
             const id = getValue(vendor, ["vendor_id", "vendorId", "id", "_id"], "");
             return (
               <option key={id || index} value={id}>
-                {getValue(vendor, ["shop_name", "name"], "Vendor")} - {id}
+                {getValue(vendor, ["shop_name", "name"], "Vendor")}
               </option>
             );
           })}
@@ -1246,7 +1251,7 @@ function VendorSelect({ vendors, vendorId, onChange, onRefresh, loading, label, 
 }
 
 function DemandForecast({ vendors }) {
-  const [vendorId, setVendorId] = useState("");
+  const [vendorId, setVendorId] = useState(ALL_SHOPS);
   const [forecast, setForecast] = useState([]);
   const [summary, setSummary] = useState(null);
   const [windowLabel, setWindowLabel] = useState("");
@@ -1262,6 +1267,26 @@ function DemandForecast({ vendors }) {
     try {
       setLoading(true);
       setMessage("");
+      if (id === ALL_SHOPS) {
+        // Every live shop at once; demand comes from each shop's cached forecast, so this stays quick.
+        const data = await request("/demand-forecast");
+        const rows = (data.forecast || []).sort(
+          (a, b) =>
+            vendorName(vendors, a.vendor_id).localeCompare(vendorName(vendors, b.vendor_id)) ||
+            String(a.product_name).localeCompare(String(b.product_name))
+        );
+        const sum = (key) => rows.reduce((total, row) => total + Number(row[key] || 0), 0);
+        setForecast(rows);
+        setSummary({
+          predicted_demand: sum("predicted_demand"),
+          current_stock: sum("current_stock"),
+          requested_kg: sum("requested_kg"),
+          refill_quantity: sum("refill_quantity"),
+          products_to_restock: rows.filter((row) => row.restock_needed).length
+        });
+        setWindowLabel("");
+        return;
+      }
       const data = await request(`/vendors/${id}/demand-forecast`);
       setForecast(data.forecast || []);
       setSummary(data.summary || null);
@@ -1274,6 +1299,12 @@ function DemandForecast({ vendors }) {
       setLoading(false);
     }
   };
+
+  // Loads on open (all shops by default) and again whenever the top bar's Refresh runs.
+  const refreshTick = useContext(RefreshContext);
+  useEffect(() => {
+    loadForecast();
+  }, [refreshTick]);
 
   const totals = {
     predicted: Number(summary?.predicted_demand || 0),
@@ -1305,8 +1336,8 @@ function DemandForecast({ vendors }) {
         }}
         onRefresh={() => loadForecast()}
         loading={loading}
-        label="Select Vendor"
-        description="Shops with no sales yet get a baseline from location, weather and festivals; it adapts after a week of sales."
+        label="Shop"
+        description="All shops, or one. Shops with no sales yet get a baseline from location, weather and festivals; it adapts after a week of sales."
         refreshLabel="Refresh Forecast"
       />
 
@@ -1325,13 +1356,13 @@ function DemandForecast({ vendors }) {
           icon={AlertTriangle}
           title="To Restock"
           value={totals.refill.toFixed(1)}
-          text={`kg across ${summary?.products_to_restock || 0} product(s)`}
+          text={`kg across ${summary?.products_to_restock || 0} ${vendorId === ALL_SHOPS ? "shop-product line(s)" : "product(s)"}`}
           danger={totals.refill > 0}
         />
       </div>
 
-      {!vendorId ? (
-        <AIEmpty icon={TrendingUp} title="Select a vendor" text="Choose a vendor above to view the demand forecast." />
+      {forecast.length === 0 && loading ? (
+        <AIEmpty icon={TrendingUp} title="Loading forecast..." text="Reading every shop's demand for this window." />
       ) : forecast.length === 0 && !loading ? (
         <AIEmpty
           icon={TrendingUp}
@@ -1352,6 +1383,7 @@ function DemandForecast({ vendors }) {
               <table>
                 <thead>
                   <tr>
+                    {vendorId === ALL_SHOPS && <th>Shop</th>}
                     <th>Product</th>
                     <th>Demand</th>
                     <th>Safety Stock</th>
@@ -1360,13 +1392,13 @@ function DemandForecast({ vendors }) {
                     <th>Requested</th>
                     <th>Restock</th>
                     <th>Status</th>
-                    <th>Held Batches</th>
-                    <th>Batches to Assign</th>
+                    <th>Can be covered by</th>
                   </tr>
                 </thead>
                 <tbody>
                   {forecast.map((item, index) => (
-                    <tr key={item.product_name || index}>
+                    <tr key={`${item.vendor_id || ""}-${item.product_name || index}`}>
+                      {vendorId === ALL_SHOPS && <td><strong>{vendorName(vendors, item.vendor_id)}</strong></td>}
                       <td>
                         <strong>{item.product_name || "-"}</strong>
                         {item.history_source === "baseline" && (
@@ -1385,32 +1417,16 @@ function DemandForecast({ vendors }) {
                         </span>
                       </td>
                       <td>
-                        <div className="batch-chips">
-                          {(item.batches || []).map((batch) => (
-                            <span
-                              key={batch.batch_id}
-                              className="batch-chip"
-                              title={`${batch.batch_id} · ${batch.remaining_kg} kg · ${formatStatus(batch.status)} · ${formatDate(batch.received_at)}`}
-                            >
-                              <strong>{batch.batch_id}</strong>
-                              <span>{batch.remaining_kg} kg · {batch.expired ? "expired" : formatDate(batch.received_at)}</span>
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td>
-                        <div className="batch-chips">
-                          {(item.suggested_batches || []).map((batch) => (
-                            <span key={batch.batch_id} className="batch-chip">
-                              <strong>{batch.batch_id}</strong>
-                              <span>{batch.remaining_kg} kg</span>
-                            </span>
-                          ))}
-                          {item.uncovered_kg > 0 && (
-                            <span className="ai-selector-description">{item.uncovered_kg} kg not yet produced</span>
-                          )}
-                          {!item.restock_needed && "-"}
-                        </div>
+                        {!item.restock_needed
+                          ? "-"
+                          : [
+                              (item.suggested_batches || []).length
+                                ? `${item.suggested_batches.length} unassigned batch(es), ${item.suggested_kg} kg`
+                                : "",
+                              item.uncovered_kg > 0 ? `${item.uncovered_kg} kg not yet made` : ""
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
                       </td>
                     </tr>
                   ))}
@@ -1433,7 +1449,7 @@ function RiskBar({ score, label }) {
 }
 
 function SpoilageRisk({ vendors }) {
-  const [vendorId, setVendorId] = useState("");
+  const [vendorId, setVendorId] = useState(ALL_SHOPS);
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -1447,6 +1463,30 @@ function SpoilageRisk({ vendors }) {
     try {
       setLoading(true);
       setMessage("");
+      if (id === ALL_SHOPS) {
+        // One request per live shop, in parallel; risk is scored live, so it is not cached.
+        const shops = liveVendors(vendors);
+        const reports = await Promise.all(
+          shops.map((v) => request(`/vendors/${v.vendor_id}/spoilage-risk`).catch(() => null))
+        );
+        const evaluations = reports.flatMap((r, i) =>
+          (r?.evaluations || []).map((e) => ({ ...e, vendor_id: shops[i].vendor_id }))
+        );
+        const kg = evaluations.reduce((total, e) => total + Number(e.remaining_kg || 0), 0);
+        const score = kg
+          ? evaluations.reduce((total, e) => total + Number(e.risk_score || 0) * Number(e.remaining_kg || 0), 0) / kg
+          : null;
+        const count = (label) => evaluations.filter((e) => e.risk_label === label).length;
+        setReport({
+          evaluations,
+          summary: { high: count("High"), medium: count("Medium"), low: count("Low") },
+          aggregate_risk_score: score,
+          // Same bands as the backend: <=30 Low, 30-70 Medium, >70 High.
+          aggregate_risk_label: score == null ? null : score > 70 ? "High" : score > 30 ? "Medium" : "Low"
+        });
+        if (reports.includes(null)) setMessage("Some shops could not be evaluated; refresh to try again.");
+        return;
+      }
       const data = await request(`/vendors/${id}/spoilage-risk`);
       setReport(data);
       setMessage(data.error || data.message || "");
@@ -1457,6 +1497,12 @@ function SpoilageRisk({ vendors }) {
       setLoading(false);
     }
   };
+
+  // Loads on open (all shops by default) and again whenever the top bar's Refresh runs.
+  const refreshTick = useContext(RefreshContext);
+  useEffect(() => {
+    loadRisk();
+  }, [refreshTick]);
 
   const evaluations = report?.evaluations || [];
   const summary = report?.summary || { high: 0, medium: 0, low: 0 };
@@ -1486,8 +1532,8 @@ function SpoilageRisk({ vendors }) {
         }}
         onRefresh={() => loadRisk()}
         loading={loading}
-        label="Select Vendor"
-        description="Archived, sold-out and expired-out batches are excluded."
+        label="Shop"
+        description="All shops, or one. Archived, sold-out and expired-out batches are excluded."
         refreshLabel="Refresh Risk"
       />
 
@@ -1500,7 +1546,7 @@ function SpoilageRisk({ vendors }) {
 
       <div className="ai-stats-grid risk-kpis">
         <div className="ai-stat-card aggregate-card" style={{ borderColor: riskColor(aggregateLabel) }}>
-          <div className="dashboard-stat-label">Vendor Aggregate Risk</div>
+          <div className="dashboard-stat-label">{vendorId === ALL_SHOPS ? "Network risk" : "Shop risk"}</div>
           <div className="dashboard-stat-value">
             <strong style={{ color: riskColor(aggregateLabel) }}>
               {aggregate == null ? "-" : `${aggregate.toFixed(1)}%`}
@@ -1515,10 +1561,10 @@ function SpoilageRisk({ vendors }) {
         <AIStat icon={Package} title="Total Batches" value={evaluations.length} text="held" />
       </div>
 
-      {!vendorId ? (
-        <AIEmpty icon={ShieldAlert} title="Select a vendor" text="Choose a vendor above to evaluate spoilage risk." danger />
+      {evaluations.length === 0 && loading ? (
+        <AIEmpty icon={ShieldAlert} title="Evaluating..." text="Scoring every batch the shops hold." danger />
       ) : evaluations.length === 0 && !loading ? (
-        <AIEmpty icon={ShieldAlert} title="No batches assigned" text="This vendor holds no batches." danger />
+        <AIEmpty icon={ShieldAlert} title="No batches held" text="No shop in this view holds a batch right now." danger />
       ) : (
         <div className="ai-table-card">
           <div className="ai-card-header">
@@ -1532,8 +1578,9 @@ function SpoilageRisk({ vendors }) {
             <table>
               <thead>
                 <tr>
-                  <th>Batch ID</th>
+                  {vendorId === ALL_SHOPS && <th>Shop</th>}
                   <th>Product</th>
+                  <th>Made</th>
                   <th>Remaining</th>
                   <th>Risk Score</th>
                   <th>Risk Label</th>
@@ -1543,8 +1590,9 @@ function SpoilageRisk({ vendors }) {
               <tbody>
                 {evaluations.map((item, index) => (
                   <tr key={item.batch_id || index}>
-                    <td>{item.batch_id}</td>
+                    {vendorId === ALL_SHOPS && <td><strong>{vendorName(vendors, item.vendor_id)}</strong></td>}
                     <td><strong>{item.product_name}</strong></td>
+                    <td>{formatDate(item.manufactured_at)}</td>
                     <td>{item.remaining_kg} kg</td>
                     <td>
                       <div className="risk-score-cell">
@@ -1553,8 +1601,8 @@ function SpoilageRisk({ vendors }) {
                       </div>
                     </td>
                     <td>
-                      <span className={statusClass(item.risk_label === "Low" ? "active" : item.risk_label)}>
-                        {item.risk_label} Risk
+                      <span className={statusClass(item.expired ? "rejected" : item.risk_label === "Low" ? "active" : item.risk_label)}>
+                        {item.expired ? "Expired" : `${item.risk_label} Risk`}
                       </span>
                     </td>
                     <td>{item.action}</td>

@@ -8,6 +8,14 @@ export function parseServerDate(value: unknown): Date {
   return new Date(/T[\d:.]+$/.test(text) ? `${text}Z` : text);
 }
 
+/** "made 28 Oct, 5:10 AM": how a shop tells its batches apart (no batch codes on screen). */
+export function madeLabel(value: unknown): string {
+  if (!value) return "";
+  const date = parseServerDate(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `made ${date.toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}`;
+}
+
 export type VendorProfile = StringMap & {
   _id?: string;
   vendor_id?: string | null;
@@ -111,6 +119,7 @@ export type VendorBatch = StringMap & {
   threshold_kg?: number;
   low_stock?: boolean;
   received_at?: string | null;
+  manufactured_at?: string | null;
   expires_at?: string | null;
   risk_score?: number;
   risk_label?: "Low" | "Medium" | "High";

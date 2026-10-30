@@ -9,14 +9,14 @@ import { Screen } from "@/src/components/layout";
 import { AlertBox, StatusPill } from "@/src/components/status";
 import { API_BASE } from "@/src/lib/config";
 import { messageOf, useAuth } from "@/src/lib/auth";
-import { colors, fonts, radius } from "@/src/theme";
+import { colors, fonts, formatStatus, radius } from "@/src/theme";
 
 function formatCoord(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(6) : "—";
 }
 
 export default function ProfileScreen() {
-  const { vendor, vendorId, session, signOut, refreshVendor } = useAuth();
+  const { vendor, session, signOut, refreshVendor } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
 
@@ -70,12 +70,8 @@ export default function ProfileScreen() {
           <StatusPill status={vendor?.status ?? "pending"} />
         </View>
 
-        <InfoRow label="Vendor ID" value={String(vendorId || "—")} />
         <InfoRow label="Phone" value={String(vendor?.phone || "—")} />
-        <InfoRow label="Locality Tier" value={String(vendor?.locality_tier ?? "mixed")} />
-        <InfoRow label="Latitude" value={formatCoord(location?.latitude)} />
-        <InfoRow label="Longitude" value={formatCoord(location?.longitude)} />
-        <InfoRow label="Address" value={String(location?.address || "—")} last />
+        <InfoRow label="Area type" value={formatStatus(vendor?.locality_tier ?? "mixed")} last />
       </Card>
 
       <View>
@@ -131,23 +127,21 @@ const styles = StyleSheet.create({
     width: 46,
     height: 46,
     borderRadius: 23,
-    backgroundColor: colors.primary,
+    backgroundColor: colors.butter,
     alignItems: "center",
     justifyContent: "center",
   },
   avatarText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
+    color: colors.primary,
+    fontSize: 17,
+    fontFamily: fonts.black,
   },
   headerText: {
     flex: 1,
     gap: 3,
   },
   name: {
-    fontSize: 15,
-    fontWeight: "700",
+    fontSize: 18,
     fontFamily: fonts.bold,
     color: colors.text,
   },

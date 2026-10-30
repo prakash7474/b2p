@@ -83,7 +83,42 @@ export function BarMeter({
   );
 }
 
+const RISK_BADGES: Record<string, { label: string; fg: string; bg: string }> = {
+  High: { label: "High risk", fg: "#fff", bg: colors.danger },
+  Expired: { label: "Expired", fg: "#fff", bg: colors.danger },
+  Medium: { label: "Medium risk", fg: colors.warning, bg: colors.butter },
+  Low: { label: "Low risk", fg: colors.primary, bg: colors.successBg },
+};
+
+/** Spoilage risk as a filled badge, so a risky batch stands out at a glance. */
+export function RiskBadge({ label }: { label: string }) {
+  const badge = RISK_BADGES[label] ?? RISK_BADGES.Low;
+  return (
+    <View style={[styles.badge, { backgroundColor: badge.bg }]}>
+      <MaterialCommunityIcons
+        name={label === "Low" ? "shield-check-outline" : "alert-octagon-outline"}
+        size={15}
+        color={badge.fg}
+      />
+      <Text style={[styles.badgeText, { color: badge.fg }]}>{badge.label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    alignSelf: "flex-start",
+  },
+  badgeText: {
+    fontSize: 13,
+    fontFamily: fonts.bold,
+  },
   pill: {
     alignSelf: "flex-start",
     paddingHorizontal: 12,

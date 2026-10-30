@@ -5,6 +5,7 @@ import math
 import statistics
 import datetime
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from zoneinfo import ZoneInfo
 from fastapi import Body, Depends, HTTPException, Path
@@ -506,10 +507,13 @@ def get_all_demand_forecasts(vendor_id: Optional[str] = None, user: dict = Depen
             raise HTTPException(status_code=404, detail="Vendor not found")
         return _forecast_response(vendor, ctx)
 
-    results = []
-    for vendor in COLS["vendors"].find({"vendor_id": {"$exists": True}}):
-        for row in _vendor_forecast(vendor, ctx)[0]:
-            results.append({"vendor_id": vendor["vendor_id"], **row})
+    live = [v for v in COLS["vendors"].find({"vendor_id": {"$exists": True}})
+            if _vendor_status(v) in ("active", "approved")]
+    # Each shop costs a few database round trips; doing shops side by side keeps the
+    # all-shops view about as fast as one shop.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        per_shop = list(pool.map(lambda vendor: _vendor_forecast(vendor, ctx)[0], live))
+    results = [{"vendor_id": vendor["vendor_id"], **row} for vendor, rows in zip(live, per_shop) for row in rows]
     return {"count": len(results), "forecast": results}
 
 
@@ -647,6 +651,8 @@ def _batch_evaluation(vendor, batch, weather):
         "low_stock": remaining <= threshold,
         "received_at": batch.get("received_at"),
         "assigned_at": batch.get("assigned_at"),
+        # What a person uses to tell batches apart: product + when it was made.
+        "manufactured_at": _field(batch, "manufactured_at", "mfgTimestamp", "created_at"),
         "expires_at": batch.get("expires_at"),
         "hours_to_expiry": round(max(0.0, hours_left), 1),
         "expired": hours_left <= 0,
