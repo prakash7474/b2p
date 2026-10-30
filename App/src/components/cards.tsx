@@ -1,7 +1,7 @@
 import { type ReactNode } from "react";
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 
-import { SecondaryButton } from "@/src/components/controls";
+import { Button } from "@/src/components/controls";
 import { colors, fonts, radius, textStyles } from "@/src/theme";
 
 /** White card with the 2px forest outline. */
@@ -65,7 +65,7 @@ export function StatCard({
       </View>
       {action ? (
         <View style={styles.statAction}>
-          <SecondaryButton label={action.label} compact onPress={action.onPress} />
+          <Button label={action.label} compact onPress={action.onPress} />
         </View>
       ) : null}
     </View>

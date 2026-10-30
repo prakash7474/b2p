@@ -18,6 +18,7 @@ export default function DashboardScreen() {
 
   const [report, setReport] = useState<RiskReport | null>(null);
   const [logs, setLogs] = useState<ActivityLog[] | null>(null);
+  const [restockKg, setRestockKg] = useState<number | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -31,6 +32,10 @@ export default function DashboardScreen() {
       const [riskData, logData] = await Promise.all([api.getRisk(vendorId), api.getLogs()]);
       setReport(riskData);
       setLogs(logData);
+      // The restock figure is a nice-to-have: a forecast failure must not hide the rest.
+      api.getForecast(vendorId)
+        .then((result) => setRestockKg(Number(result.summary?.refill_quantity ?? 0)))
+        .catch(() => setRestockKg(null));
     } catch (caught) {
       setNotice({ type: "error", text: messageOf(caught) });
     } finally {
@@ -117,12 +122,12 @@ export default function DashboardScreen() {
           action={{ label: "Spoilage risk", onPress: () => router.push("/(vendor)/risk") }}
         />
         <StatCard
-          icon={(color) => <MaterialCommunityIcons name="truck-check-outline" size={18} color={color} />}
-          label="To Confirm"
-          value={toConfirm.length}
-          sub="assigned batches"
-          tone={toConfirm.length > 0 ? "warning" : "success"}
-          action={{ label: "My requests", onPress: () => router.push("/(vendor)/request-batches") }}
+          icon={(color) => <MaterialCommunityIcons name="truck-delivery-outline" size={18} color={color} />}
+          label="Restock Needed"
+          value={restockKg == null ? "—" : restockKg.toFixed(1)}
+          sub={restockKg == null ? "forecast unavailable" : restockKg > 0 ? "kg for this window" : "kg, stock covers demand"}
+          tone={restockKg ? "danger" : "success"}
+          action={{ label: "Demand forecast", onPress: () => router.push("/(vendor)/forecast") }}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="alert-decagram-outline" size={18} color={color} />}
@@ -130,6 +135,7 @@ export default function DashboardScreen() {
           value={lowStock}
           sub={lowStock > 0 ? "below threshold" : "all healthy"}
           tone={lowStock > 0 ? "danger" : "success"}
+          action={{ label: "View batches", onPress: () => router.push("/(vendor)/inventory") }}
         />
       </StatGrid>
 
