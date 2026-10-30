@@ -51,16 +51,20 @@ export default function ForecastScreen() {
     void load();
   };
 
-  // One-tap request for a batch the forecast suggests; the forecast then counts it as incoming.
-  const requestSuggested = async (batchId: string) => {
+  // One tap requests every batch the forecast suggests for a product (one request per batch,
+  // so the admin assigns each on its own); the forecast then counts them as incoming.
+  const requestSuggested = async (product: string, batchIds: string[]) => {
     try {
-      setBusyBatch(batchId);
+      setBusyBatch(product);
       setError("");
-      const result = await api.requestBatch(vendorId, batchId);
-      setNote(result.message ?? "Batch requested.");
+      for (const batchId of batchIds) {
+        await api.requestBatch(vendorId, batchId);
+      }
+      setNote(`Requested ${batchIds.length} ${product} batch${batchIds.length === 1 ? "" : "es"}. The admin will assign them.`);
       await load();
     } catch (caught) {
       setError(messageOf(caught));
+      await load();
     } finally {
       setBusyBatch("");
     }
@@ -169,26 +173,33 @@ export default function ForecastScreen() {
                     <Stat label="Restock" value={kg(refill)} tone={restock ? "danger" : "success"} />
                   </View>
 
-                  {suggested.map((batch) => (
-                    <View key={String(batch.batch_id)} style={styles.suggestRow}>
-                      <Text style={styles.suggestText}>
-                        Available: {kg(batch.remaining_kg)}
-                        {batch.hours_to_expiry !== undefined
-                          ? `, ${Math.round(Number(batch.hours_to_expiry))} h shelf life left`
-                          : ""}
-                      </Text>
-                      <SecondaryButton
-                        label="Request"
+                  {restock ? (
+                    <View style={styles.requestBox}>
+                      <Button
+                        label={suggested.length > 0 ? `Request ${kg(item.suggested_kg)}` : "No batch available yet"}
+                        full
                         compact
-                        loading={busyBatch === batch.batch_id}
-                        onPress={() => void requestSuggested(String(batch.batch_id))}
+                        disabled={suggested.length === 0}
+                        loading={busyBatch === String(item.product_name)}
+                        icon={<MaterialCommunityIcons name="truck-delivery-outline" size={18} color={colors.primary} />}
+                        onPress={() =>
+                          void requestSuggested(
+                            String(item.product_name ?? "product"),
+                            suggested.map((batch) => String(batch.batch_id)),
+                          )
+                        }
                       />
+                      {suggested.length > 0 ? (
+                        <Text style={styles.note}>
+                          From {suggested.length} available batch{suggested.length === 1 ? "" : "es"}, freshest first.
+                        </Text>
+                      ) : null}
+                      {uncovered > 0 ? (
+                        <Text style={styles.note}>
+                          {kg(uncovered)} has no batch available yet; the manufacturer will make more.
+                        </Text>
+                      ) : null}
                     </View>
-                  ))}
-                  {restock && uncovered > 0 ? (
-                    <Text style={styles.note}>
-                      {kg(uncovered)} has no batch available yet; the manufacturer will make more.
-                    </Text>
                   ) : null}
                 </View>
               );
@@ -254,20 +265,11 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontFamily: fonts.bold,
   },
-  suggestRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-    paddingTop: 10,
+  requestBox: {
+    gap: 8,
+    paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: colors.line,
-  },
-  suggestText: {
-    flex: 1,
-    fontSize: 14,
-    color: colors.text,
-    fontFamily: fonts.regular,
   },
   note: {
     fontSize: 13,

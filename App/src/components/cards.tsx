@@ -1,6 +1,7 @@
 import { type ReactNode } from "react";
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 
+import { SecondaryButton } from "@/src/components/controls";
 import { colors, fonts, radius, textStyles } from "@/src/theme";
 
 /** White card with the 2px forest outline. */
@@ -34,6 +35,7 @@ export function StatCard({
   value,
   sub,
   tone = "primary",
+  action,
 }: {
   /** Render prop so the glyph can be tinted to match the tone. */
   icon: (color: string) => ReactNode;
@@ -41,6 +43,8 @@ export function StatCard({
   value: ReactNode;
   sub?: string;
   tone?: "primary" | "danger" | "warning" | "success";
+  /** Optional link to the screen with the details behind this number. */
+  action?: { label: string; onPress: () => void };
 }) {
   const toneStyle = {
     primary: { bg: colors.butter, fg: colors.primary },
@@ -59,6 +63,11 @@ export function StatCard({
         <Text style={styles.statValue}>{value}</Text>
         {sub ? <Text style={styles.statSub}>{sub}</Text> : null}
       </View>
+      {action ? (
+        <View style={styles.statAction}>
+          <SecondaryButton label={action.label} compact onPress={action.onPress} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -159,6 +168,10 @@ const styles = StyleSheet.create({
     fontSize: 30,
     fontFamily: fonts.black,
     color: colors.text,
+  },
+  statAction: {
+    marginTop: 12,
+    alignItems: "flex-start",
   },
   statSub: {
     fontSize: 13,

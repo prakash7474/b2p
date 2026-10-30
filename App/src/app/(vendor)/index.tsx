@@ -106,6 +106,7 @@ export default function DashboardScreen() {
           label="Current Stock"
           value={currentStock.toFixed(1)}
           sub={`kg in ${inStore.length} batches`}
+          action={{ label: "View batches", onPress: () => router.push("/(vendor)/inventory") }}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="shield-alert-outline" size={18} color={color} />}
@@ -113,6 +114,7 @@ export default function DashboardScreen() {
           value={aggregate == null ? "—" : `${aggregate.toFixed(1)}%`}
           sub={aggregateLabel ?? "no batches"}
           tone={aggregateLabel === "High" ? "danger" : aggregateLabel === "Medium" ? "warning" : "success"}
+          action={{ label: "Spoilage risk", onPress: () => router.push("/(vendor)/risk") }}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="truck-check-outline" size={18} color={color} />}
@@ -120,6 +122,7 @@ export default function DashboardScreen() {
           value={toConfirm.length}
           sub="assigned batches"
           tone={toConfirm.length > 0 ? "warning" : "success"}
+          action={{ label: "My requests", onPress: () => router.push("/(vendor)/request-batches") }}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="alert-decagram-outline" size={18} color={color} />}
