@@ -904,7 +904,9 @@ def test_nearby_search_lists_only_fresh_sellable_stock(client, seeded):
     make_batch(seeded, "B-FRESH", vendor_id=ACTIVE_VENDOR, remaining=4.0)
     make_batch(seeded, "B-STALE", vendor_id=ACTIVE_VENDOR, remaining=9.0, age_hours=200)
     vendors = client.get("/vendors", params={"latitude": 13.08, "longitude": 80.27}).json()["vendors"]
-    assert vendors[0]["available_inventory"] == [{"product_id": "P200", "product_name": "Test Batter", "quantity": 4.0}]
+    stock = [{k: item[k] for k in ("product_id", "product_name", "quantity")} for item in vendors[0]["available_inventory"]]
+    assert stock == [{"product_id": "P200", "product_name": "Test Batter", "quantity": 4.0}]
+    assert {"price", "made_at"} <= set(vendors[0]["available_inventory"][0])
 
 
 def test_new_shop_gets_baseline_forecast_for_every_product(client, seeded):
@@ -1052,3 +1054,66 @@ def test_vendor_sees_its_own_alerts_problems_first(client, seeded, db):
     body = client.get(f"/vendors/{ACTIVE_VENDOR}/alerts").json()
     assert [a["kind"] for a in body["alerts"]] == ["expired", "awaiting"]
     assert client.get("/vendors/V999/alerts").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# customer pickup orders
+# ---------------------------------------------------------------------------
+
+def as_customer(customer_id="C1"):
+    main.app.dependency_overrides[main.current_user] = lambda: {"sub": customer_id, "role": "customer", "vendor_id": None}
+
+
+def as_admin():
+    main.app.dependency_overrides[main.current_user] = lambda: ADMIN
+
+
+def test_pickup_order_holds_stock_until_collected(client, seeded, db):
+    now = datetime.utcnow()
+    db.products.insert_one({"product_id": "P001", "product_name": "Idli Batter", "price": 80,
+                            "shelf_life_fridge_hrs": 72, "shelf_life_ambient_hrs": 24})
+    db.batches.insert_one({"batch_id": "PB1", "product_id": "P001", "product_name": "Idli Batter",
+                           "vendor_id": ACTIVE_VENDOR, "status": "received", "volume_kg": 10,
+                           "manufactured_at": now - timedelta(hours=1), "updated_at": now})
+    try:
+        as_customer()
+        placed = client.post("/customer-orders", json={"vendor_id": ACTIVE_VENDOR,
+                                                       "items": [{"product_name": "Idli Batter", "quantity_kg": 4}]})
+        assert placed.status_code == 200
+        order = placed.json()["order"]
+        assert (order["total"], order["status"], len(order["pickup_code"])) == (320.0, "to_collect", 4)
+        # held kg cannot be ordered again or sold over the counter
+        assert client.post("/customer-orders", json={"vendor_id": ACTIVE_VENDOR, "items": [
+            {"product_name": "Idli Batter", "quantity_kg": 7}]}).status_code == 409
+        as_admin()
+        walk_in = client.post("/orders", json={"vendor_id": ACTIVE_VENDOR, "product_name": "Idli Batter", "quantity_kg": 7})
+        assert walk_in.status_code == 409 and "set aside" in walk_in.json()["error"]
+        assert [o["order_id"] for o in client.get(f"/vendors/{ACTIVE_VENDOR}/pickups").json()["orders"]] == [order["order_id"]]
+
+        path = f"/vendors/{ACTIVE_VENDOR}/pickups/{order['order_id']}/collect"
+        assert client.post(path, json={"code": "nope"}).status_code == 400
+        assert client.post(path, json={"code": order["pickup_code"]}).status_code == 200
+        assert client.post(path, json={"code": order["pickup_code"]}).status_code == 409  # only once
+        assert db.batches.find_one({"batch_id": "PB1"})["remaining_volume_kg"] == 6.0
+        as_customer()
+        assert client.get("/customer-orders").json()["orders"][0]["status"] == "collected"
+    finally:
+        as_admin()
+
+
+def test_lapsed_pickup_frees_its_stock(client, seeded, db):
+    now = datetime.utcnow()
+    db.batches.insert_one({"batch_id": "PB2", "product_id": "P001", "product_name": "Idli Batter",
+                           "vendor_id": ACTIVE_VENDOR, "status": "received", "volume_kg": 5,
+                           "manufactured_at": now - timedelta(hours=1), "updated_at": now})
+    db.orders.insert_one({"order_id": "PU-OLD", "kind": "pickup", "vendor_id": ACTIVE_VENDOR, "user_id": "C1",
+                          "items": [{"product_name": "Idli Batter", "quantity_kg": 5}], "status": "to_collect",
+                          "pickup_code": "1234", "created_at": now - timedelta(hours=3),
+                          "hold_until": now - timedelta(hours=1)})
+    sale = client.post("/orders", json={"vendor_id": ACTIVE_VENDOR, "product_name": "Idli Batter", "quantity_kg": 5})
+    assert sale.status_code == 200
+    try:
+        as_customer()
+        assert client.get("/customer-orders").json()["orders"][0]["status"] == "expired"
+    finally:
+        as_admin()

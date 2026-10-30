@@ -1,4 +1,5 @@
 import datetime
+import secrets
 import threading
 from typing import Optional
 from fastapi import Body, Depends, HTTPException, Path, Query, status
@@ -90,6 +91,7 @@ def find_nearby_vendors(latitude, longitude, radius_meters=5000, product_id=None
             ]}
         }}
     ]
+    prices = {_product_key(p.get("product_name")): p.get("price") for p in COLS["products"].find()}
     results = []
     for vendor in COLS["vendors"].aggregate(pipeline):
         vendor_ids = _vendor_id_values(vendor)
@@ -102,9 +104,16 @@ def find_nearby_vendors(latitude, longitude, radius_meters=5000, product_id=None
                 continue
             name = _field(batch, "product_name", "product_id", default="Batter")
             item = stock.setdefault(_product_key(name), {
-                "product_id": batch.get("product_id") or name, "product_name": name, "quantity": 0.0})
+                "product_id": batch.get("product_id") or name, "product_name": name, "quantity": 0.0,
+                "price": prices.get(_product_key(name)), "made_at": None})
             item["quantity"] = round(item["quantity"] + _batch_remaining(batch), 2)
-        stock_items = list(stock.values())
+            # The freshest batch is what a customer cares about.
+            made = _field(batch, "manufactured_at", "mfgTimestamp", "created_at")
+            if isinstance(made, datetime.datetime) and (item["made_at"] is None or made > item["made_at"]):
+                item["made_at"] = made
+        for item in stock.values():
+            item["quantity"] = round(max(0.0, item["quantity"] - _reserved_kg(vendor, item["product_name"])), 2)
+        stock_items = [item for item in stock.values() if item["quantity"] > 0]
         if not stock_items:
             continue
         vendor["_id"] = str(vendor["_id"])
@@ -1287,33 +1296,17 @@ def return_batch(vendor_id: str = Path(...), batch_id: str = Path(...), data: di
             "status": "returned", "returned_kg": returned_kg}
 
 
-@app.post("/orders")
-def create_order(data: dict = Body(...), user: dict = Depends(current_user)):
-    """Customer purchase: deducts kg from a batch (or FEFO across the vendor's batches)."""
-    require_role(user, "vendor", "customer")
-    if user["role"] == "vendor":
-        require_vendor(user, str(data.get("vendor_id") or ""))
-    # A customer buys as themself; only a vendor/admin may record a sale for someone else.
-    customer_id = user["sub"] if user["role"] == "customer" else data.get("customer_id")
-    vendor = _find_vendor(str(data.get("vendor_id") or ""))
-    if not vendor:
-        raise HTTPException(status_code=404, detail="Vendor not found")
-    try:
-        quantity = float(data.get("quantity_kg", data.get("quantity", 0)))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="quantity_kg must be a number")
-    if not quantity > 0:
-        raise HTTPException(status_code=400, detail="quantity_kg must be greater than 0")
-
+def _sell(vendor, product, batch_id, quantity, actor_id, customer_id, exclude_order=None):
+    """Take kg out of the vendor's batches (one batch, or first-expiring first) and record the sale.
+    All or nothing. Returns (order record, low-stock alerts)."""
     query = {"vendor_id": {"$in": _vendor_id_values(vendor)}, "status": {"$in": SELLABLE_STATUSES}}
-    if data.get("batch_id"):
-        query["batch_id"] = data["batch_id"]
+    if batch_id:
+        query["batch_id"] = batch_id
     batches = [b for b in COLS["batches"].find(query) if _batch_remaining(b) > 0]
-    if data.get("batch_id") and batches and _hours_to_expiry(vendor, batches[0]) <= 0:
-        raise HTTPException(status_code=409, detail=f"Batch {data['batch_id']} has expired and cannot be sold")
+    if batch_id and batches and _hours_to_expiry(vendor, batches[0]) <= 0:
+        raise HTTPException(status_code=409, detail=f"Batch {batch_id} has expired and cannot be sold")
     batches = [b for b in batches if _hours_to_expiry(vendor, b) > 0]
-    product = data.get("product_name") or data.get("product_id")
-    if product and not data.get("batch_id"):
+    if product and not batch_id:
         batches = [b for b in batches if product in (b.get("product_id"), b.get("product_name"))
                    or _product_key(product) == _product_key(_field(b, "product_name", "product_id"))]
     # First-expiring (else oldest) batch sells first.
@@ -1324,6 +1317,15 @@ def create_order(data: dict = Body(...), user: dict = Depends(current_user)):
     available = sum(_batch_remaining(b) for b in batches)
     if not batches or available < quantity:
         raise HTTPException(status_code=409, detail=f"Only {round(available, 2)} kg available")
+    # Kg set aside for customer pickups cannot be sold to someone else.
+    name = product or _field(batches[0], "product_name", "product_id")
+    reserved = _reserved_kg(vendor, name, exclude_order)
+    if reserved:
+        product_kg = sum(_batch_remaining(b) for b in _sellable_batches(vendor)
+                         if _product_key(_field(b, "product_name", "product_id")) == _product_key(name))
+        if product_kg - reserved < quantity:
+            raise HTTPException(status_code=409, detail=f"Only {round(max(0.0, product_kg - reserved), 2)} kg of "
+                                                        f"{name} is free; {round(reserved, 2)} kg is set aside for customer pickups")
 
     now = datetime.datetime.utcnow()
     left, taken = quantity, []
@@ -1360,7 +1362,7 @@ def create_order(data: dict = Body(...), user: dict = Depends(current_user)):
         COLS["inventory_movement"].insert_one({
             "vendorId": vendor["vendor_id"], "productId": _field(batch, "product_id", "product_name"),
             "batchId": batch["batch_id"], "movementType": "sale", "quantity": round(take, 3),
-            "occurredAt": now, "triggeredBy": customer_id or user["sub"],
+            "occurredAt": now, "triggeredBy": customer_id or actor_id,
             "metadata": {"previousQty": before, "newQty": after},
         })
         threshold = _batch_threshold(batch)
@@ -1387,6 +1389,177 @@ def create_order(data: dict = Body(...), user: dict = Depends(current_user)):
         "order_date": now,
     }
     COLS["orders"].insert_one(dict(order))
+    return order, alerts
+
+
+# Customer pickup orders: placing one sets the kg aside (nothing is sold yet); the shop
+# marks it collected, which records the sale. Unclaimed holds lapse after PICKUP_HOLD_HOURS.
+PICKUP_HOLD_HOURS = 2
+
+
+def _open_pickups(vendor, exclude_order=None):
+    query = {"kind": "pickup", "vendor_id": vendor.get("vendor_id"), "status": "to_collect",
+             "hold_until": {"$gt": datetime.datetime.utcnow()}}
+    if exclude_order:
+        query["order_id"] = {"$ne": exclude_order}
+    return list(COLS["orders"].find(query))
+
+
+def _reserved_kg(vendor, product, exclude_order=None):
+    key = _product_key(product)
+    return sum(float(item["quantity_kg"]) for order in _open_pickups(vendor, exclude_order)
+               for item in order.get("items", []) if _product_key(item.get("product_name")) == key)
+
+
+def _expire_pickups(query):
+    """Holds past their time read as expired (stock was never taken, so nothing to give back)."""
+    COLS["orders"].update_many({**query, "kind": "pickup", "status": "to_collect",
+                                "hold_until": {"$lte": datetime.datetime.utcnow()}},
+                               {"$set": {"status": "expired"}})
+
+
+def _pickup_view(order):
+    order["_id"] = str(order["_id"])
+    return order
+
+
+@app.post("/customer-orders")
+def place_pickup_order(data: dict = Body(...), user: dict = Depends(current_user)):
+    """A customer orders batter from one shop to collect and pay for there."""
+    require_role(user, "customer")
+    vendor = _find_vendor(str(data.get("vendor_id") or ""))
+    if not vendor or _vendor_status(vendor) not in APPROVED_STATUSES:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    wanted = {}
+    for item in data.get("items") or []:
+        name = str(item.get("product_name") or "").strip()
+        try:
+            kg = float(item.get("quantity_kg"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="quantity_kg must be a number")
+        if not name or kg <= 0:
+            continue
+        wanted[name] = wanted.get(name, 0.0) + kg
+    if not wanted:
+        raise HTTPException(status_code=400, detail="Choose at least one product and an amount")
+
+    prices = {_product_key(p.get("product_name")): p.get("price") for p in COLS["products"].find()}
+    sellable = _sellable_batches(vendor)
+    items, total = [], 0.0
+    for name, kg in wanted.items():
+        free = sum(_batch_remaining(b) for b in sellable
+                   if _product_key(_field(b, "product_name", "product_id")) == _product_key(name))
+        free -= _reserved_kg(vendor, name)
+        # shortcut: two customers ordering the last kg at the same instant can both pass this check; fine at shop scale.
+        if free < kg:
+            raise HTTPException(status_code=409, detail=f"Only {round(max(0.0, free), 2)} kg of {name} is left at this shop")
+        price = prices.get(_product_key(name))
+        line = round(float(price) * kg, 2) if price is not None else None
+        total += line or 0.0
+        items.append({"product_name": name, "quantity_kg": round(kg, 3), "price_per_kg": price, "line_total": line})
+
+    taken = {o.get("pickup_code") for o in _open_pickups(vendor)}
+    code = f"{secrets.randbelow(10000):04d}"
+    while code in taken:
+        code = f"{secrets.randbelow(10000):04d}"
+    customer = COLS["customers"].find_one({"_id": ObjectId(user["sub"])}) if ObjectId.is_valid(user["sub"]) else None
+    now = datetime.datetime.utcnow()
+    order = {
+        "order_id": f"PU-{now.strftime('%Y%m%d%H%M%S%f')}",
+        "kind": "pickup",
+        "fulfilment": "pickup",
+        "payment": "at_shop",
+        "vendor_id": vendor["vendor_id"],
+        "shop_name": vendor.get("shop_name"),
+        "user_id": user["sub"],
+        "customer_name": (customer or {}).get("name"),
+        "items": items,
+        "total": round(total, 2),
+        "status": "to_collect",
+        "pickup_code": code,
+        "created_at": now,
+        "hold_until": now + datetime.timedelta(hours=PICKUP_HOLD_HOURS),
+    }
+    COLS["orders"].insert_one(order)
+    summary = ", ".join(f"{i['product_name']} {i['quantity_kg']:g} kg" for i in items)
+    _log("pickup_order", f"A customer ordered {summary} for pickup at {vendor.get('shop_name') or vendor['vendor_id']}",
+         vendor["vendor_id"])
+    return {"message": "Order placed", "order": _pickup_view(order)}
+
+
+@app.get("/customer-orders")
+def my_pickup_orders(user: dict = Depends(current_user)):
+    require_role(user, "customer")
+    _expire_pickups({"user_id": user["sub"]})
+    orders = COLS["orders"].find({"kind": "pickup", "user_id": user["sub"]}).sort("created_at", -1).limit(50)
+    return {"orders": [_pickup_view(o) for o in orders]}
+
+
+@app.get("/vendors/{vendor_id}/pickups")
+def shop_pickups(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    """Orders customers will collect from this shop, oldest first."""
+    require_vendor(user, vendor_id)
+    vendor = _find_vendor(vendor_id)
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    _expire_pickups({"vendor_id": vendor["vendor_id"]})
+    orders = sorted(_open_pickups(vendor), key=lambda o: o["created_at"])
+    return {"orders": [_pickup_view(o) for o in orders]}
+
+
+@app.post("/vendors/{vendor_id}/pickups/{order_id}/collect")
+def collect_pickup(vendor_id: str = Path(...), order_id: str = Path(...), data: dict = Body(default={}),
+                   user: dict = Depends(current_user)):
+    """The customer showed their code and paid: sell the held kg and close the order."""
+    require_vendor(user, vendor_id)
+    vendor = _find_vendor(vendor_id)
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    order = COLS["orders"].find_one({"kind": "pickup", "order_id": order_id, "vendor_id": vendor["vendor_id"]})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order["status"] != "to_collect":
+        raise HTTPException(status_code=409, detail=f"This order is already {order['status']}")
+    if str(data.get("code") or "").strip() != order["pickup_code"]:
+        raise HTTPException(status_code=400, detail="That pickup code does not match this order")
+    # Mark it first so a double tap cannot sell twice; put it back if a sale fails.
+    if COLS["orders"].update_one({"_id": order["_id"], "status": "to_collect"},
+                                 {"$set": {"status": "collecting"}}).modified_count == 0:
+        raise HTTPException(status_code=409, detail="This order is already being collected")
+    try:
+        for item in order["items"]:
+            _sell(vendor, item["product_name"], None, float(item["quantity_kg"]), user["sub"],
+                  order["user_id"], exclude_order=order_id)
+    except HTTPException:
+        COLS["orders"].update_one({"_id": order["_id"]}, {"$set": {"status": "to_collect"}})
+        raise
+    now = datetime.datetime.utcnow()
+    COLS["orders"].update_one({"_id": order["_id"]}, {"$set": {"status": "collected", "collected_at": now}})
+    _log("pickup_collected", f"{vendor.get('shop_name') or vendor['vendor_id']} handed over a customer pickup "
+                             f"({order['total']:g} rupees)", vendor["vendor_id"])
+    return {"message": "Order collected", "order_id": order_id, "status": "collected"}
+
+
+@app.post("/orders")
+def create_order(data: dict = Body(...), user: dict = Depends(current_user)):
+    """Customer purchase: deducts kg from a batch (or FEFO across the vendor's batches)."""
+    require_role(user, "vendor", "customer")
+    if user["role"] == "vendor":
+        require_vendor(user, str(data.get("vendor_id") or ""))
+    # A customer buys as themself; only a vendor/admin may record a sale for someone else.
+    customer_id = user["sub"] if user["role"] == "customer" else data.get("customer_id")
+    vendor = _find_vendor(str(data.get("vendor_id") or ""))
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    try:
+        quantity = float(data.get("quantity_kg", data.get("quantity", 0)))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="quantity_kg must be a number")
+    if not quantity > 0:
+        raise HTTPException(status_code=400, detail="quantity_kg must be greater than 0")
+
+    product = data.get("product_name") or data.get("product_id")
+    order, alerts = _sell(vendor, product, data.get("batch_id"), quantity, user["sub"], customer_id)
     return {"message": "Order placed", "order": order, "alerts": alerts}
 
 
