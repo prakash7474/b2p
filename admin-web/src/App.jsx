@@ -1058,6 +1058,25 @@ const BATCH_BADGE_CLASS = {
 function Batches({ batches, products, vendors, search, setSearch, refresh }) {
   const [productFilter, setProductFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  // Spoilage risk per batch_id, scored per shop that holds batches; factory batches have none yet.
+  const [risk, setRisk] = useState({});
+  const refreshTick = useContext(RefreshContext);
+  useEffect(() => {
+    let live = true;
+    const holders = [...new Set(batches.filter((b) => b.vendor_id && isActiveBatch(b)).map((b) => b.vendor_id))];
+    holders.forEach((vendorId) => {
+      request(`/vendors/${vendorId}/spoilage-risk`)
+        .then((data) => {
+          if (!live) return;
+          const scored = Object.fromEntries((data.evaluations || []).map((e) => [e.batch_id, e.expired ? "Expired" : e.risk_label]));
+          setRisk((prev) => ({ ...prev, ...scored }));
+        })
+        .catch(() => {});
+    });
+    return () => {
+      live = false;
+    };
+  }, [batches, refreshTick]);
   // Only what the manufacturer knows. Shelf life depends on the vendor's storage
   // and the low-stock alert defaults to 20% of volume, both set by the backend.
   const [form, setForm] = useState({ product_id: "", volume_kg: "", manufactured_at: localNow() });
@@ -1225,7 +1244,14 @@ function Batches({ batches, products, vendors, search, setSearch, refresh }) {
                   <h3>{batch.productName}</h3>
                   <span>made {formatDate(getValue(batch, ["manufactured_at", "mfgTimestamp", "created_at"], ""))}</span>
                 </div>
-                <span className={BATCH_BADGE_CLASS[batch.statusLabel] || "risk-badge risk-none"}>{batch.statusLabel}</span>
+                <div className="badge-stack">
+                  <span className={BATCH_BADGE_CLASS[batch.statusLabel] || "risk-badge risk-none"}>{batch.statusLabel}</span>
+                  {risk[batch.batch_id] && (
+                    <span className={RISK_BADGE_CLASS[risk[batch.batch_id]] || "risk-badge risk-high"}>
+                      {risk[batch.batch_id] === "Expired" ? "Expired" : `${risk[batch.batch_id]} risk`}
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="batch-shop">
                 {batch.shop ? <>At <strong>{batch.shop}</strong></> : "Not assigned to a shop yet"}

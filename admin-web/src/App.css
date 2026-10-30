@@ -13,7 +13,8 @@
   --sidebar-hover: #0b6a54;
   --text: #333333;
   --muted: #5c5c5c;
-  --background: #ffffff;
+  /* Warm cream page ground (a pale shade of the butter accent), so white cards stand out. */
+  --background: #f7f1df;
   --surface: #ffffff;
   --border: #cfdcd8;
   --success: #035542;
@@ -611,6 +612,13 @@ button:disabled {
   color: #0b5f5d;
 }
 
+.badge-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
 .batch-shop {
   font-size: 14px;
 }
@@ -735,7 +743,7 @@ button:disabled {
   color: var(--primary);
 }
 
-.item-card-head > div > span {
+.item-card-head > div:first-child > span {
   font-size: 13px;
   color: var(--muted);
 }
