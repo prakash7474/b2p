@@ -72,6 +72,7 @@ def test_sales_series_buckets_slots_and_stops_before_current(monkeypatch):
 
 def test_expiry_depends_on_fridge(monkeypatch):
     monkeypatch.setitem(main.COLS, "products", FakeCollection([]))  # default shelf life: 72h fridge / 24h room
+    main._forget_catalog()
     batch = {"product_name": "Idli Batter",
              "manufactured_at": datetime.datetime.utcnow() - datetime.timedelta(hours=30)}
 

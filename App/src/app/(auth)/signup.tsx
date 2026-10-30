@@ -278,7 +278,7 @@ export default function SignUpScreen() {
 
       <Button
         label="Create Vendor Account"
-        icon={<MaterialCommunityIcons name="account-plus-outline" size={14} color="#fff" />}
+        icon={<MaterialCommunityIcons name="account-plus-outline" size={18} color={colors.primary} />}
         onPress={submit}
         loading={loading}
         disabled={!canSubmit}
@@ -311,7 +311,7 @@ const styles = StyleSheet.create({
   },
   warningText: {
     flex: 1,
-    fontSize: 11,
+    fontSize: 13,
     lineHeight: 16,
     color: colors.warning,
     fontFamily: fonts.regular,
@@ -324,7 +324,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.control,
-    backgroundColor: "#faf8f5",
+    backgroundColor: colors.tableHeader,
     padding: 14,
     gap: 10,
     marginBottom: 16,
@@ -335,7 +335,7 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   locationTitle: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "700",
     fontFamily: fonts.bold,
     color: colors.text,
@@ -347,12 +347,12 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   locationStateText: {
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: "700",
     fontFamily: fonts.bold,
   },
   locationHint: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     lineHeight: 15,
     fontFamily: fonts.regular,
@@ -363,7 +363,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   liveAccuracyText: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.primary,
     fontFamily: fonts.semibold,
   },
@@ -381,15 +381,15 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   coordinateLabel: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
   coordinateValue: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: "600",
     fontFamily: fonts.semibold,
     color: colors.text,
@@ -410,13 +410,13 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   confirmTitle: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: "600",
     fontFamily: fonts.semibold,
     color: colors.text,
   },
   confirmCaption: {
-    fontSize: 9,
+    fontSize: 12,
     color: colors.muted,
     lineHeight: 14,
     fontFamily: fonts.regular,
@@ -426,7 +426,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   footerText: {
-    fontSize: 11,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
