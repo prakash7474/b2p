@@ -51,7 +51,6 @@ COLS = {
     "vendors": db["vendors"],
     "products": db["products"],
     "batches": db["batches"],
-    "inventory": db["inventory"],
     "orders": db["orders"],
     "logs": db["logs"],
     "restock_requests": db["restock_requests"],
@@ -60,7 +59,6 @@ COLS = {
     "weather_forecast": db["weather_forecast"],
     "festival_calendar": db["festival_calendar"],
     "feature_snapshots": db["feature_snapshots"],
-    "inventory_alerts": db["inventory_alerts"],
 }
 
 
@@ -179,7 +177,7 @@ def _hours_to_expiry(vendor, batch):
 
 def _held_batches(vendor):
     """Batches in the vendor's hands with stock left (no archived/sold-out), each flagged
-    "expired". Read-only: expire_batches() moves expired kg out of the inventory totals."""
+    "expired". Read-only: expire_batches() stamps the expiry once."""
     held = []
     for batch in COLS["batches"].find({
         "vendor_id": {"$in": _vendor_id_values(vendor)},
@@ -197,29 +195,6 @@ def _sellable_batches(vendor):
     return [b for b in _held_batches(vendor) if b["status"] in SELLABLE_STATUSES and not b["expired"]]
 
 
-def _adjust_inventory(vendor_id, batch, delta):
-    """Keep the per-product inventory row in step with batch stock."""
-    key = _product_key(_field(batch, "product_name", "product_id"))
-    now = datetime.datetime.utcnow()
-    for row in COLS["inventory"].find({"vendor_id": vendor_id}):
-        same_id = batch.get("product_id") and row.get("product_id") == batch.get("product_id")
-        if same_id or _product_key(_field(row, "product_name", "product_id")) == key:
-            COLS["inventory"].update_one({"_id": row["_id"]}, [{"$set": {
-                "quantity": {"$max": [0, {"$add": [{"$ifNull": ["$quantity", 0]}, delta]}]},
-                "last_updated": now,
-            }}])
-            return
-    COLS["inventory"].insert_one({
-        "vendor_id": vendor_id,
-        "product_id": batch.get("product_id") or batch.get("product_name"),
-        "product_name": batch.get("product_name"),
-        "batch_number": batch.get("batch_id"),
-        "quantity": max(0.0, delta),
-        "created_at": now,
-        "last_updated": now,
-    })
-
-
 def _log(action, message, vendor_id=None, kind="activity", **extra):
     """One audit-log entry; kind "alert" marks things the admin should act on."""
     COLS["logs"].insert_one({"type": kind, "action": action, "message": message, "vendor_id": vendor_id,
@@ -227,7 +202,7 @@ def _log(action, message, vendor_id=None, kind="activity", **extra):
 
 
 def expire_batches():
-    """Stamp newly expired held batches and take their kg out of inventory, once each.
+    """Stamp newly expired held batches once each, and log it.
 
     Runs on a timer (see main.py), so reads never write. Returns how many batches it expired.
     """
@@ -243,7 +218,6 @@ def expire_batches():
             {"_id": batch["_id"], "expired_at": {"$exists": False}, "status": {"$in": HELD_STATUSES}},
             {"$set": {"expired_at": datetime.datetime.utcnow()}}
         ).modified_count:
-            _adjust_inventory(vendor.get("vendor_id") or vid, batch, -_batch_remaining(batch))
             _log("batch_expired",
                  f"{_field(batch, 'product_name', 'product_id', default='Batter')} at "
                  f"{vendor.get('shop_name') or vid} expired with {round(_batch_remaining(batch), 2)} kg left",
@@ -328,6 +302,36 @@ def require_vendor(user, vendor_id):
         if vendor and user["vendor_id"] in _vendor_id_values(vendor):
             return
     raise HTTPException(status_code=403, detail="You can only access your own shop")
+
+
+# Wrong passwords per login; after LOGIN_MAX_FAILURES within LOGIN_LOCK_MINUTES the login is locked
+# for the rest of that window. shortcut: kept in this process's memory (resets on restart, counts per
+# process); move it to the database if the backend ever runs as several processes.
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCK_MINUTES = 15
+_failed_logins = {}
+
+
+def _recent_failures(login_id):
+    cutoff = time.time() - LOGIN_LOCK_MINUTES * 60
+    recent = [t for t in _failed_logins.get(login_id.lower(), []) if t > cutoff]
+    _failed_logins[login_id.lower()] = recent
+    return recent
+
+
+def _check_login_allowed(login_id):
+    recent = _recent_failures(login_id)
+    if len(recent) >= LOGIN_MAX_FAILURES:
+        wait = max(1, round((recent[0] + LOGIN_LOCK_MINUTES * 60 - time.time()) / 60))
+        raise HTTPException(status_code=429, detail=f"Too many wrong passwords. Try again in {wait} minute(s).")
+
+
+def _record_login_failure(login_id):
+    _recent_failures(login_id).append(time.time())
+
+
+def _clear_login_failures(login_id):
+    _failed_logins.pop(login_id.lower(), None)
 
 
 def _find_login_user(login_id):

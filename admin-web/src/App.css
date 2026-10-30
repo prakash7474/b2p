@@ -1262,11 +1262,6 @@ tbody tr:last-child td {
   background: var(--danger-bg);
 }
 
-.alert-info {
-  color: var(--primary);
-  background: var(--success-bg);
-}
-
 /* AI */
 
 .ai-page {
@@ -1375,31 +1370,6 @@ tbody tr:last-child td {
 
 .risk-score-cell strong {
   font-size: 15px;
-}
-
-.batch-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.batch-chip {
-  display: inline-flex;
-  flex-direction: column;
-  padding: 4px 9px;
-  border-radius: 9999px;
-  border: 1px solid var(--border);
-  background: var(--primary-light);
-  font-size: 12px;
-  cursor: default;
-}
-
-.batch-chip strong {
-  color: var(--primary-dark, var(--primary));
-}
-
-.batch-chip:hover {
-  border-color: var(--primary);
 }
 
 .ai-stat-card {

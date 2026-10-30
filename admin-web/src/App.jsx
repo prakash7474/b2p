@@ -979,7 +979,7 @@ function Demands({ demands, vendors, refresh }) {
                         onClick={() => act(demand, "confirm")}
                       >
                         <CheckCircle2 size={13} />
-                        {item.batch_id ? "Assign" : "Confirm"}
+                        Assign
                       </button>
                       <button
                         className="secondary-btn small-btn danger-btn"

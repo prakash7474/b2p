@@ -11,18 +11,16 @@ from bson import ObjectId
 if __package__:
     from .common import *  # noqa: F401,F403
     from .common import (_field, _product_key, _batch_remaining, _batch_volume, _batch_threshold,
-                         _sellable_batches, _adjust_inventory, _hours_to_expiry,
-                         _find_vendor, _vendor_id_values, _find_login_user, _vendor_for_user,
-                         _vendor_status, _locality_tier, _held_batches, _log, _hours_since,
-                         _forget_catalog)
+                         _sellable_batches, _hours_to_expiry, _find_vendor, _vendor_id_values, _find_login_user,
+                         _vendor_for_user, _vendor_status, _locality_tier, _held_batches, _log, _hours_since,
+                         _check_login_allowed, _record_login_failure, _clear_login_failures, _forget_catalog)
     from . import ml  # noqa: F401  registers the model routes
 else:
     from common import *  # noqa: F401,F403
     from common import (_field, _product_key, _batch_remaining, _batch_volume, _batch_threshold,
-                        _sellable_batches, _adjust_inventory, _hours_to_expiry,
-                        _find_vendor, _vendor_id_values, _find_login_user, _vendor_for_user,
-                        _vendor_status, _locality_tier, _held_batches, _log, _hours_since,
-                        _forget_catalog)
+                        _sellable_batches, _hours_to_expiry, _find_vendor, _vendor_id_values, _find_login_user,
+                        _vendor_for_user, _vendor_status, _locality_tier, _held_batches, _log, _hours_since,
+                        _check_login_allowed, _record_login_failure, _clear_login_failures, _forget_catalog)
     import ml  # noqa: F401  registers the model routes
 
 
@@ -97,7 +95,7 @@ def find_nearby_vendors(latitude, longitude, radius_meters=5000, product_id=None
         vendor_ids = _vendor_id_values(vendor)
         if not vendor_ids:
             continue
-        # Stock comes from fresh batches, not the inventory rows, so expired kg never shows.
+        # Stock comes from fresh batches, so expired kg never shows.
         stock = {}
         for batch in _sellable_batches(vendor):
             if product_id and product_id not in (batch.get("product_id"), batch.get("product_name")):
@@ -156,8 +154,6 @@ def ensure_indexes():
 
     _create_index(COLS["vendors"], [("location_geo", "2dsphere")], "vendor_location_geo_2dsphere")
     _create_index(COLS["vendors"], [("status", 1)], "vendor_status_idx")
-    _create_index(COLS["inventory"], [("vendor_id", 1), ("product_id", 1)], "inventory_vendor_product_idx")
-    _create_index(COLS["inventory"], [("product_id", 1), ("quantity", 1)], "inventory_product_quantity_idx")
     _create_index(COLS["products"], [("product_id", 1)], "products_product_id_idx")
     _create_index(COLS["users"], [("email", 1)], "users_email_idx")
     _create_index(COLS["users"], [("phone", 1)], "users_phone_idx")
@@ -190,16 +186,8 @@ def startup_database_setup():
 
 @app.get("/")
 def home():
-    expected_collections = [
-        "vendors", "products", "batches", "inventory", "orders",
-        "logs", "restock_requests", "predictions",
-        "inventory_movement", "weather_forecast", "festival_calendar",
-        "feature_snapshots"
-    ]
-    return {
-        "database": "b2p",
-        "collections": expected_collections
-    }
+    """Health check for the apps and uptime monitors; says nothing about the database."""
+    return {"status": "ok", "service": "b2p"}
 
 
 @app.post("/login")
@@ -212,9 +200,12 @@ def login(data: dict = Body(...)):
 
     if not login_id or not password:
         raise HTTPException(status_code=400, detail="Login and password are required")
+    _check_login_allowed(login_id)
     user = _find_login_user(login_id)
     if not user or not user.get("password_hash") or not check_password(password, user["password_hash"]):
+        _record_login_failure(login_id)
         raise HTTPException(status_code=401, detail="Invalid login")
+    _clear_login_failures(login_id)
     if not user.get("is_verified", False):
         raise HTTPException(status_code=403, detail="User is not verified")
 
@@ -242,24 +233,9 @@ def login(data: dict = Body(...)):
         )
     return response
 
+
 # List routes return one page, newest first: ?limit= (default 500, at most 1000) and ?skip=.
 # shortcut: the apps read only the first page; page with skip once a list outgrows 500.
-@app.get("/users")
-def get_users(limit: int = Query(500, ge=1, le=1000), skip: int = Query(0, ge=0), user: dict = Depends(current_user)):
-    require_role(user)
-    users = list(COLS["users"].find({}, {"password_hash": 0}).sort("_id", -1).skip(skip).limit(limit))
-    if not users:
-        users = list(COLS["vendors"].find().sort("_id", -1).skip(skip).limit(limit))
-
-    for user in users:
-        user["_id"] = str(user["_id"])
-
-    return {
-        "count": len(users),
-        "users": users
-    }
-
-
 @app.get("/logs")
 def get_logs(limit: int = Query(500, ge=1, le=1000), skip: int = Query(0, ge=0), user: dict = Depends(current_user)):
     # Admins see every entry; a vendor sees only its own.
@@ -402,148 +378,6 @@ def get_vendor(vendor_id: str = Path(...), user: dict = Depends(current_user)):
 
     return {
         "vendor": vendor
-    }
-
-@app.get("/vendors/{vendor_id}/products")
-def get_vendor_products(vendor_id: str = Path(...), user: dict = Depends(current_user)):
-    require_vendor(user, vendor_id)
-    vid = vendor_id
-
-    if ObjectId.is_valid(vendor_id):
-        vendor = COLS["vendors"].find_one({
-            "_id": ObjectId(vendor_id)
-        })
-
-        if vendor and "vendor_id" in vendor:
-            vid = vendor["vendor_id"]
-
-    inventory = list(
-        COLS["inventory"].find({
-            "$or": [
-                {"vendor_id": vid},
-                {"vendor_id": vendor_id}
-            ]
-        })
-    )
-
-    product_ids = [
-        item.get("product_id")
-        for item in inventory
-        if item.get("product_id")
-    ]
-
-    product_names = [
-        item.get("product_name")
-        for item in inventory
-        if item.get("product_name")
-    ]
-
-    query = {
-        "$or": []
-    }
-
-    if product_ids:
-        query["$or"].append({
-            "product_id": {
-                "$in": product_ids
-            }
-        })
-
-    if product_names:
-        query["$or"].append({
-            "product_name": {
-                "$in": product_names
-            }
-        })
-
-    if not query["$or"]:
-        products = list(COLS["products"].find())
-    else:
-        products = list(COLS["products"].find(query))
-
-    for product in products:
-        product["_id"] = str(product["_id"])
-
-    return {
-        "count": len(products),
-        "products": products
-    }
-
-
-
-@app.get("/vendors/{vendor_id}/inventory")
-def get_vendor_inventory(vendor_id: str = Path(...), user: dict = Depends(current_user)):
-    require_vendor(user, vendor_id)
-    vid = vendor_id
-
-    if ObjectId.is_valid(vendor_id):
-        vendor = COLS["vendors"].find_one({
-            "_id": ObjectId(vendor_id)
-        })
-
-        if vendor and "vendor_id" in vendor:
-            vid = vendor["vendor_id"]
-
-    inventory = list(
-        COLS["inventory"].find({
-            "$or": [
-                {
-                    "vendor_id": vid
-                },
-                {
-                    "vendor_id": vendor_id
-                }
-            ]
-        })
-    )
-
-    for item in inventory:
-        item["_id"] = str(item["_id"])
-
-    return {
-        "count": len(inventory),
-        "inventory": inventory
-    }
-
-
-@app.get("/vendors/{vendor_id}/orders")
-def get_vendor_orders(vendor_id: str = Path(...), user: dict = Depends(current_user)):
-    require_vendor(user, vendor_id)
-    orders = list(
-        COLS["orders"].find({
-            "$or": [
-                {"vendor_id": vendor_id},
-                {"vendor_id": str(vendor_id)}
-            ],
-            "order_type": {"$ne": "restock"},  # restock requests are not sales
-        })
-    )
-    for order in orders:
-        order["_id"] = str(order["_id"])
-    return {
-        "vendor_id": vendor_id,
-        "count": len(orders),
-        "orders": orders
-    }
-
-
-@app.get("/vendors/{vendor_id}/restock-requests")
-def get_vendor_restock_requests(vendor_id: str = Path(...), user: dict = Depends(current_user)):
-    require_vendor(user, vendor_id)
-    requests = list(
-        COLS["restock_requests"].find({
-            "$or": [
-                {"vendor_id": vendor_id},
-                {"vendor_id": str(vendor_id)}
-            ]
-        })
-    )
-    for req in requests:
-        req["_id"] = str(req["_id"])
-    return {
-        "vendor_id": vendor_id,
-        "count": len(requests),
-        "restock_requests": requests
     }
 
 
@@ -790,94 +624,6 @@ def set_batch_visibility(batch_id: str = Path(...), data: dict = Body(...), user
     return {"message": "Batch visibility updated", "batch_id": batch_id, "exposed": bool(data.get("exposed"))}
 
 
-@app.get("/batches/{batch_id}")
-def get_batch(batch_id: str = Path(...), user: dict = Depends(current_user)):
-    require_role(user, "vendor")
-    batch = COLS["batches"].find_one({"batch_id": batch_id})
-    if batch is None and ObjectId.is_valid(batch_id):
-        batch = COLS["batches"].find_one({"_id": ObjectId(batch_id)})
-    if batch is None:
-        raise HTTPException(status_code=404, detail="Batch not found")
-    batch["_id"] = str(batch["_id"])
-    return {"batch": batch}
-
-
-@app.post("/inventory")
-def create_inventory(data: dict = Body(...), user: dict = Depends(current_user)):
-    require_role(user)
-    vendor_id = data.get("vendor_id")
-    product_id = data.get("product_id")
-    if not vendor_id or not product_id:
-        raise HTTPException(status_code=400, detail="vendor_id and product_id are required")
-    vendor = COLS["vendors"].find_one({
-        "$or": [{"vendor_id": vendor_id}, {"_id": ObjectId(vendor_id) if ObjectId.is_valid(vendor_id) else None}]
-    })
-    if not vendor:
-        raise HTTPException(status_code=404, detail=f"Vendor {vendor_id} not found")
-    product = COLS["products"].find_one({"product_id": product_id})
-    if not product:
-        raise HTTPException(status_code=404, detail=f"Product {product_id} not found. Create the product first.")
-    quantity = float(data.get("quantity", 0))
-    if quantity < 0:
-        raise HTTPException(status_code=400, detail="quantity must be >= 0")
-    existing = COLS["inventory"].find_one({"vendor_id": vendor_id, "product_id": product_id})
-    if existing:
-        COLS["inventory"].update_one(
-            {"_id": existing["_id"]},
-            {"$set": {
-                "quantity": quantity,
-                "product_name": product.get("product_name"),
-                "batch_number": data.get("batch_number", existing.get("batch_number")),
-                "updated_at": datetime.datetime.utcnow().isoformat()
-            }}
-        )
-        updated = COLS["inventory"].find_one({"_id": existing["_id"]})
-        updated["_id"] = str(updated["_id"])
-        COLS["logs"].insert_one({
-            "type": "activity",
-            "action": "update_inventory",
-            "vendor_id": vendor_id,
-            "product_id": product_id,
-            "quantity": quantity,
-            "message": f"Updated inventory for {product_id} at vendor {vendor_id}"
-        })
-        return {"message": "Inventory updated", "inventory": updated}
-    inventory_doc = {
-        "vendor_id": vendor_id,
-        "product_id": product_id,
-        "product_name": product.get("product_name"),
-        "batch_number": data.get("batch_number"),
-        "quantity": quantity,
-        "created_at": datetime.datetime.utcnow().isoformat(),
-        "updated_at": datetime.datetime.utcnow().isoformat()
-    }
-    result = COLS["inventory"].insert_one(inventory_doc)
-    inventory_doc["_id"] = str(result.inserted_id)
-    COLS["logs"].insert_one({
-        "type": "activity",
-        "action": "create_inventory",
-        "vendor_id": vendor_id,
-        "product_id": product_id,
-        "quantity": quantity,
-        "message": f"Mapped inventory for {product_id} at vendor {vendor_id}"
-    })
-    return {"message": "Inventory created successfully", "inventory": inventory_doc}
-
-
-@app.get("/inventory")
-def list_inventory(vendor_id: str = None, product_id: str = None, user: dict = Depends(current_user)):
-    require_role(user)
-    query = {}
-    if vendor_id:
-        query["vendor_id"] = vendor_id
-    if product_id:
-        query["product_id"] = product_id
-    items = list(COLS["inventory"].find(query))
-    for item in items:
-        item["_id"] = str(item["_id"])
-    return {"count": len(items), "inventory": items}
-
-
 EXPIRY_SOON_HOURS = 6
 
 
@@ -1114,30 +860,8 @@ def create_demand(
             })
             continue
 
-        product_id = item.get("product_id")
-        quantity = item.get("quantity", 0)
-
-        if not product_id:
-            raise HTTPException(status_code=400, detail="product_id is required")
-
-        if quantity <= 0:
-            raise HTTPException(status_code=400, detail="Quantity must be greater than 0")
-
-        inventory = COLS["inventory"].find_one({
-            "vendor_id": vendor_id,
-            "product_id": product_id
-        })
-
-        if not inventory:
-            raise HTTPException(status_code=400, detail=f"Product {product_id} is not mapped")
-
-        demand_items.append({
-            "product_id": product_id,
-            "product_name": inventory.get("product_name"),
-            "batch_number": inventory.get("batch_number"),
-            "inventory_id": inventory.get("inventory_id"),
-            "quantity": quantity
-        })
+        # Stock only reaches a shop as a batch, so plain product quantities are refused.
+        raise HTTPException(status_code=400, detail="Request a specific batch from the available batches list")
 
     demand = {
         "vendor_id": vendor_id,
@@ -1166,8 +890,6 @@ def create_demand(
     }
 
 
-
-
 @app.post("/vendors/{vendor_id}/demands/{demand_id}/confirm")
 def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...), user: dict = Depends(current_user)):
     require_role(user)
@@ -1178,28 +900,28 @@ def confirm_demand(vendor_id: str = Path(...), demand_id: str = Path(...), user:
     if not demand:
         raise HTTPException(status_code=404, detail="Demand not found")
 
-    # Batch request: confirming = the admin assigns the batch to this vendor.
+    # Confirming a batch request = the admin assigns the batch to this vendor.
     now = datetime.datetime.utcnow()
     batch_ids = [item["batch_id"] for item in demand.get("items", []) if item.get("batch_id")]
-    if batch_ids:
-        if demand.get("status") != "pending":
-            raise HTTPException(status_code=409, detail="Only pending requests can be assigned")
-        for batch_id in batch_ids:
-            batch = COLS["batches"].find_one_and_update(
-                {"batch_id": batch_id, "status": "available"},
-                {"$set": {"status": "assigned", "vendor_id": vendor_id, "assigned_at": now, "updated_at": now},
-                 "$push": {"assignment_log": {"vendor_id": vendor_id, "assigned_at": now,
-                                              "assigned_by": "Admin", "request_id": demand_id}}},
-                return_document=ReturnDocument.AFTER
-            )
-            if not batch:
-                raise HTTPException(status_code=409, detail=f"Batch {batch_id} is no longer available")
-            _adjust_inventory(vendor_id, batch, _batch_remaining(batch))
-        # Other vendors' requests for the same batch can no longer be met.
-        COLS["restock_requests"].update_many(
-            {"_id": {"$ne": demand["_id"]}, "status": "pending", "items.batch_id": {"$in": batch_ids}},
-            {"$set": {"status": "rejected", "rejected_at": now, "admin_notes": "Batch assigned to another vendor"}}
+    if not batch_ids:
+        raise HTTPException(status_code=400, detail="Only batch requests can be assigned")
+    if demand.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="Only pending requests can be assigned")
+    for batch_id in batch_ids:
+        batch = COLS["batches"].find_one_and_update(
+            {"batch_id": batch_id, "status": "available"},
+            {"$set": {"status": "assigned", "vendor_id": vendor_id, "assigned_at": now, "updated_at": now},
+             "$push": {"assignment_log": {"vendor_id": vendor_id, "assigned_at": now,
+                                          "assigned_by": "Admin", "request_id": demand_id}}},
+            return_document=ReturnDocument.AFTER
         )
+        if not batch:
+            raise HTTPException(status_code=409, detail=f"Batch {batch_id} is no longer available")
+    # Other vendors' requests for the same batch can no longer be met.
+    COLS["restock_requests"].update_many(
+        {"_id": {"$ne": demand["_id"]}, "status": "pending", "items.batch_id": {"$in": batch_ids}},
+        {"$set": {"status": "rejected", "rejected_at": now, "admin_notes": "Batch assigned to another vendor"}}
+    )
 
     COLS["restock_requests"].update_one(
         {"_id": demand["_id"]},
@@ -1285,8 +1007,6 @@ def return_batch(vendor_id: str = Path(...), batch_id: str = Path(...), data: di
     if not batch:
         raise HTTPException(status_code=409, detail=f"Batch {batch_id} is not in this vendor's store")
     returned_kg = round(_batch_remaining(batch), 2)
-    if not batch.get("expired_at"):  # expired kg already left the inventory total
-        _adjust_inventory(vendor["vendor_id"], batch, -returned_kg)
     COLS["logs"].insert_one({
         "type": "activity", "action": "return_batch", "vendor_id": vendor["vendor_id"],
         "batch_id": batch_id, "reason": reason, "returned_kg": returned_kg, "timestamp": now,
@@ -1354,11 +1074,10 @@ def _sell(vendor, product, batch_id, quantity, actor_id, customer_id, exclude_or
         left -= take
         taken.append((batch, before, take, after))
 
-    # Every batch update succeeded: now write the inventory, movements, alerts and order.
+    # Every batch update succeeded: now write the movements and the order.
     deductions, alerts = [], []
     for batch, before, take, after in taken:
         deductions.append({"batch_id": batch["batch_id"], "quantity_kg": round(take, 3), "remaining_kg": after})
-        _adjust_inventory(vendor["vendor_id"], batch, -take)
         COLS["inventory_movement"].insert_one({
             "vendorId": vendor["vendor_id"], "productId": _field(batch, "product_id", "product_name"),
             "batchId": batch["batch_id"], "movementType": "sale", "quantity": round(take, 3),
@@ -1375,7 +1094,6 @@ def _sell(vendor, product, batch_id, quantity, actor_id, customer_id, exclude_or
                                  f"{after} kg left (threshold {threshold} kg)",
                 "alert_status": "active", "generated_time": now,
             }
-            COLS["inventory_alerts"].insert_one(dict(alert))
             alerts.append(alert)
 
     order = {
@@ -1563,100 +1281,6 @@ def create_order(data: dict = Body(...), user: dict = Depends(current_user)):
     return {"message": "Order placed", "order": order, "alerts": alerts}
 
 
-@app.post("/vendors/{vendor_id}/inventory/sync")
-def sync_inventory(vendor_id: str = Path(...), user: dict = Depends(current_user)):
-    require_vendor(user, vendor_id)
-    # Batch requests are closed by /batches/{id}/receive, not by a product sync.
-    demands = list(
-        COLS["restock_requests"].find({
-            "vendor_id": vendor_id,
-            "status": "confirmed",
-            "items.batch_id": {"$exists": False}
-        })
-    )
-
-    if not demands:
-        return {
-            "message": "No confirmed demand"
-        }
-
-    updated = []
-    for demand in demands:
-        for item in demand.get("items", []):
-            pid = item.get("product_id")
-            qty = item.get("quantity", 0)
-            inv = COLS["inventory"].find_one({
-                "vendor_id": vendor_id,
-                "product_id": pid
-            })
-            old_qty = float(inv.get("quantity", 0.0)) if inv else 0.0
-            new_qty = old_qty + float(qty)
-            COLS["inventory"].update_one(
-                {
-                    "vendor_id": vendor_id,
-                    "product_id": pid
-                },
-                {
-                    "$inc": {
-                        "quantity": qty
-                    },
-                    "$set": {
-                        "last_updated": datetime.datetime.utcnow().isoformat()
-                    }
-                },
-                upsert=False
-            )
-            updated.append({
-                "product_id": pid,
-                "product_name": (inv.get("product_name") if inv else None) or item.get("product_name", ""),
-                "batch_number": (inv.get("batch_number") if inv else None) or item.get("batch_number", ""),
-                "old_quantity": old_qty,
-                "new_quantity": new_qty
-            })
-
-        COLS["restock_requests"].update_one(
-            {
-                "_id": demand["_id"]
-            },
-            {
-                "$set": {
-                    "status": "synchronized"
-                }
-            }
-        )
-
-    return {
-        "message": "Inventory synchronized",
-        "synced_demands": len(demands),
-        "updated": updated
-    }
-
-
-@app.get("/pending/vendors")
-def get_pending_vendors(user: dict = Depends(current_user)):
-    require_role(user)
-    vendors = list(
-        COLS["vendors"].find({
-            "$or": [
-                {
-                    "status": "pending"
-                },
-                {
-                    "verificationStatus": "pending"
-                }
-            ]
-        })
-    )
-
-    for vendor in vendors:
-        vendor["_id"] = str(vendor["_id"])
-
-    return {
-        "count": len(vendors),
-        "vendors": vendors
-    }
-
-
 # POST /vendors/{vendor_id}/status — admin approves, rejects or suspends a vendor.
 # Body: {"status": "active" | "rejected" | "suspended"}
 @app.post("/vendors/{vendor_id}/status")
@@ -1708,60 +1332,6 @@ def get_user(user_id: str = Path(...), user: dict = Depends(current_user)):
 
     return {
         "user": user
-    }
-
-
-@app.post("/restock-requests")
-def create_restock_request(data: dict = Body(...), user: dict = Depends(current_user)):
-    vendor_id = data.get("vendor_id")
-
-    if not vendor_id:
-        raise HTTPException(status_code=400, detail="vendor_id is required")
-    require_vendor(user, str(vendor_id))
-    if not _find_vendor(str(vendor_id)):
-        raise HTTPException(status_code=404, detail=f"Vendor {vendor_id} not found")
-
-    # Store only known fields: the body comes straight from the client.
-    items = data.get("items")
-    if not isinstance(items, list) or not items:
-        raise HTTPException(status_code=400, detail="items must be a non-empty list")
-    clean_items = []
-    for item in items:
-        if not isinstance(item, dict) or not (item.get("product_id") or item.get("product_name")):
-            raise HTTPException(status_code=400, detail="Each item needs a product_id or product_name")
-        quantity = item.get("quantity")
-        if isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or quantity <= 0:
-            raise HTTPException(status_code=400, detail="Each item needs a quantity greater than 0")
-        clean_items.append({k: item[k] for k in ("product_id", "product_name", "quantity") if k in item})
-
-    req = COLS["restock_requests"].insert_one({
-        "vendor_id": vendor_id,
-        "items": clean_items,
-        "priority": data.get("priority", "normal"),
-        "notes": str(data.get("notes", "")),
-        "status": "pending",
-        "created_at": datetime.datetime.utcnow(),
-    })
-    req_id = str(req.inserted_id)
-
-    order = COLS["orders"].insert_one({
-        "vendor_id": vendor_id,
-        "restock_request_id": req_id,
-        "order_type": "restock",  # not a customer sale
-        "items": clean_items,
-        "status": "pending"
-    })
-
-    COLS["logs"].insert_one({
-        "action": "create_restock_request",
-        "vendor_id": str(vendor_id),
-        "request_id": req_id
-    })
-
-    return {
-        "message": "Restock request created",
-        "restock_id": req_id,
-        "order_id": str(order.inserted_id)
     }
 
 
@@ -1866,10 +1436,13 @@ def login_customer(data: dict = Body(...)):
     password = data.get("password")
     if not login_id or not password:
         raise HTTPException(status_code=400, detail="Login email/phone and password are required")
+    _check_login_allowed(login_id)
 
     user = _find_login_user(login_id)
     if not user or not user.get("password_hash") or not check_password(password, user["password_hash"]):
+        _record_login_failure(login_id)
         raise HTTPException(status_code=401, detail="Invalid email/phone or password")
+    _clear_login_failures(login_id)
     if user.get("role") != "customer":
         raise HTTPException(status_code=403, detail="This login is not a customer account")
     if not user.get("is_verified", True):

@@ -35,29 +35,20 @@ MODELS_DIR = BASE_DIR / "models"
 warnings.filterwarnings("ignore")
 
 
-def load_model_bundle(filenames):
-    for fname in filenames:
-        model_path = MODELS_DIR / fname
-        if model_path.exists():
-            try:
-                bundle = joblib.load(model_path)
-                print(f"[INFO] Loaded model: {fname}")
-                return bundle
-            except Exception as e:
-                print(f"[WARN] Failed to load {model_path}: {e}")
-    return None
+def load_model_bundle(fname):
+    """The trained model bundle saved by model_code_and_data/train_*.py, or None if it will not load."""
+    model_path = MODELS_DIR / fname
+    try:
+        bundle = joblib.load(model_path)
+        print(f"[INFO] Loaded model: {fname}")
+        return bundle
+    except Exception as e:
+        print(f"[WARN] Failed to load {model_path}: {e}")
+        return None
 
 
-# The training scripts write the plain names, so a retrained model wins over the "(2)" copies.
-demand_bundle = load_model_bundle([
-    "demand_forecast_model.pkl",
-    "demand_forecast_model (2).pkl"
-])
-
-spoilage_bundle = load_model_bundle([
-    "spoilage_risk_model.pkl",
-    "spoilage_risk_model (2).pkl"
-])
+demand_bundle = load_model_bundle("demand_forecast_model.pkl")
+spoilage_bundle = load_model_bundle("spoilage_risk_model.pkl")
 
 
 def _model_label(product):
@@ -420,7 +411,6 @@ def _vendor_forecast(vendor, ctx):
             "status": status,
             "history_source": source,
             "has_sales_history": source != "baseline",
-            "batches": [_batch_chip(b) for b in batches],
             "suggested_batches": suggested,
             "suggested_kg": suggested_kg,
             "uncovered_kg": round(max(0.0, refill - suggested_kg), 1),

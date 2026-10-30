@@ -114,7 +114,6 @@ export type ForecastItem = {
   history_source?: "sales" | "snapshot" | "baseline";
   /** kg in this shop's pending batch requests. */
   requested_kg?: number;
-  batches?: BatchChip[];
   /** Available batches that would cover the refill, freshest first. */
   suggested_batches?: BatchChip[];
   suggested_kg?: number;
