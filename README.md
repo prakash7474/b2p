@@ -28,7 +28,7 @@ A FastAPI backend for managing vendors, products, inventory, orders, and restock
 | `AUTH_SECRET` | root `.env` | Key that signs login tokens. Set a long random value before deploying (falls back to one derived from `MONGODB_URI`). |
 | `WEATHER_LAT`, `WEATHER_LON`, `WEATHER_GRID_KEY` | root `.env` | Area for the hourly Open-Meteo forecast (default: Chennai, `chennai_central`). |
 | `VITE_API_URL` | `admin-web/.env` | Backend URL for the admin panel (default `http://localhost:5000`). |
-| `EXPO_PUBLIC_API_URL` | `App/.env` | Backend URL for the mobile app on a physical device. |
+| `EXPO_PUBLIC_API_URL` | `App/.env` | Optional backend URL for the mobile app. Not needed on the same network: the dev build calls port 5000 on the laptop it loaded from. Set it for a public tunnel. |
 
 Every route except `/`, `/login`, `/customers/login`, `/customers/register` and vendor sign-up (`POST /vendors`) needs `Authorization: Bearer <token>` from a login. The admin panel signs in with a `users` row whose `role` is `admin`.
 
