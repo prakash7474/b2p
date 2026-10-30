@@ -26,6 +26,8 @@ type ScreenProps = {
   refreshing?: boolean;
   onRefresh?: () => void;
   keyboardShouldPersistTaps?: ScrollViewProps["keyboardShouldPersistTaps"];
+  /** Sticky bar under the scrolling content (e.g. an order total and its button). */
+  footer?: ReactNode;
   children: ReactNode;
 };
 
@@ -43,6 +45,7 @@ export function Screen({
   refreshing = false,
   onRefresh,
   keyboardShouldPersistTaps,
+  footer,
   children,
 }: ScreenProps) {
   const insets = useSafeAreaInsets();
@@ -93,6 +96,7 @@ export function Screen({
 
         <View style={styles.content}>{children}</View>
       </ScrollView>
+      {footer ? <View style={[styles.footer, { paddingBottom: insets.bottom + 14 }]}>{footer}</View> : null}
     </View>
   );
 }
@@ -170,6 +174,13 @@ export const styles = StyleSheet.create({
   content: {
     padding: 20,
     gap: 18,
+  },
+  footer: {
+    backgroundColor: colors.surface,
+    borderTopWidth: 2,
+    borderTopColor: colors.primary,
+    paddingHorizontal: 20,
+    paddingTop: 14,
   },
   loadingScreen: {
     flex: 1,

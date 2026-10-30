@@ -58,7 +58,29 @@ export type NearbyVendor = StringMap & {
     longitude?: number | null;
     address?: string;
   };
-  available_inventory?: StringMap[];
+  available_inventory?: StockItem[];
+};
+
+/** One product a nearby shop has free to order (held pickup kg already taken off). */
+export type StockItem = StringMap & {
+  product_id?: string;
+  product_name?: string;
+  quantity?: number;
+  price?: number | null;
+  made_at?: string | null;
+};
+
+export type PickupOrder = StringMap & {
+  order_id: string;
+  vendor_id: string;
+  shop_name?: string;
+  customer_name?: string | null;
+  items: { product_name: string; quantity_kg: number; price_per_kg?: number | null; line_total?: number | null }[];
+  total: number;
+  status: "to_collect" | "collecting" | "collected" | "expired";
+  pickup_code: string;
+  created_at: string;
+  hold_until: string;
 };
 
 export type CustomerLocation = {
@@ -410,12 +432,31 @@ export const api = {
     );
   },
 
-  /** Customer purchase: the backend sells from the vendor's first-expiring fresh batches. */
-  buy(vendorKey: string, productName: string, quantityKg: number) {
-    return request<{ message?: string; order?: StringMap }>("/orders", {
+  /** Customer: order from one shop to collect and pay there; the kg is held for a while. */
+  async placeOrder(vendorKey: string, items: { product_name: string; quantity_kg: number }[]) {
+    const data = await request<{ order: PickupOrder }>("/customer-orders", {
       method: "POST",
-      body: { vendor_id: vendorKey, product_name: productName, quantity_kg: quantityKg },
+      body: { vendor_id: vendorKey, items },
     });
+    return data.order;
+  },
+
+  async getMyOrders() {
+    const data = await request<{ orders?: PickupOrder[] }>("/customer-orders");
+    return data.orders ?? [];
+  },
+
+  /** Shop: customer orders waiting to be collected, oldest first. */
+  async getPickups(vendorKey: string) {
+    const data = await request<{ orders?: PickupOrder[] }>(`/vendors/${encodeURIComponent(vendorKey)}/pickups`);
+    return data.orders ?? [];
+  },
+
+  collectPickup(vendorKey: string, orderId: string, code: string) {
+    return request<{ message?: string }>(
+      `/vendors/${encodeURIComponent(vendorKey)}/pickups/${encodeURIComponent(orderId)}/collect`,
+      { method: "POST", body: { code } },
+    );
   },
 
   async getLogs() {
