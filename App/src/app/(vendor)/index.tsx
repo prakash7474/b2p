@@ -30,6 +30,8 @@ export default function DashboardScreen() {
   const [alerts, setAlerts] = useState<ShopAlert[]>([]);
   const [pickups, setPickups] = useState<PickupOrder[]>([]);
   const [codes, setCodes] = useState<Record<string, string>>({});
+  // Cancelling a pickup takes two taps: the first arms it, the second cancels.
+  const [cancelling, setCancelling] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -83,6 +85,25 @@ export default function DashboardScreen() {
       await api.collectPickup(vendorId, order.order_id, codes[order.order_id] ?? "");
       setNotice({ type: "success", text: `Handed over ${order.customer_name ?? "the customer"}'s order.` });
       setCodes((prev) => ({ ...prev, [order.order_id]: "" }));
+      await load();
+    } catch (caught) {
+      setNotice({ type: "error", text: messageOf(caught) });
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const cancelPickup = async (order: PickupOrder) => {
+    if (cancelling !== order.order_id) {
+      setCancelling(order.order_id);
+      return;
+    }
+    try {
+      setBusyId(order.order_id);
+      setNotice(null);
+      await api.cancelPickup(vendorId, order.order_id, "cancelled by the shop");
+      setNotice({ type: "success", text: `Cancelled ${order.customer_name ?? "the customer"}'s order; the batter is free to sell.` });
+      setCancelling("");
       await load();
     } catch (caught) {
       setNotice({ type: "error", text: messageOf(caught) });
@@ -194,6 +215,13 @@ export default function DashboardScreen() {
                     onPress={() => void handOver(order)}
                   />
                 </View>
+                <Button
+                  label={cancelling === order.order_id ? "Tap again to cancel" : "Cancel order"}
+                  tone="danger"
+                  compact
+                  disabled={busyId === order.order_id}
+                  onPress={() => void cancelPickup(order)}
+                />
               </View>
             ))}
           </Card>

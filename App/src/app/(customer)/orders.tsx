@@ -18,6 +18,7 @@ const STATUS: Record<string, { label: string; fg: string; bg: string }> = {
   collecting: { label: "Ready", fg: colors.primary, bg: colors.butter },
   collected: { label: "Collected", fg: colors.primary, bg: colors.successBg },
   expired: { label: "Not collected", fg: colors.muted, bg: colors.neutralBg },
+  cancelled: { label: "Cancelled", fg: colors.muted, bg: colors.neutralBg },
 };
 
 const when = (value: string) =>
@@ -30,6 +31,9 @@ export default function OrdersScreen() {
   const [orders, setOrders] = useState<PickupOrder[] | null>(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  // Cancelling takes two taps: the first arms it for that order, the second cancels.
+  const [confirming, setConfirming] = useState("");
+  const [busy, setBusy] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -55,6 +59,24 @@ export default function OrdersScreen() {
   const open = orders.filter((order) => order.status === "to_collect" || order.status === "collecting");
   const earlier = orders.filter((order) => !open.includes(order));
   const shopFor = (order: PickupOrder) => nearbyVendors.find((shop) => shopId(shop) === order.vendor_id);
+
+  const cancel = async (order: PickupOrder) => {
+    if (confirming !== order.order_id) {
+      setConfirming(order.order_id);
+      return;
+    }
+    try {
+      setBusy(order.order_id);
+      setError("");
+      await api.cancelMyOrder(order.order_id);
+      setConfirming("");
+      await load();
+    } catch (caught) {
+      setError(messageOf(caught));
+    } finally {
+      setBusy("");
+    }
+  };
 
   const orderAgain = (order: PickupOrder) => {
     const shop = shopFor(order);
@@ -118,6 +140,13 @@ export default function OrdersScreen() {
                       <SecondaryButton label="Directions" compact onPress={() => void Linking.openURL(directions)} />
                     ) : null}
                   </View>
+                  <Button
+                    label={confirming === order.order_id ? "Tap again to cancel this order" : "Cancel order"}
+                    tone="danger"
+                    compact
+                    loading={busy === order.order_id}
+                    onPress={() => void cancel(order)}
+                  />
                 </Card>
               );
             })}

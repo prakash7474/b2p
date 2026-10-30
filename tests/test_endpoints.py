@@ -819,3 +819,41 @@ def test_login_locks_after_repeated_wrong_passwords(client, seeded, no_auth_over
     assert locked.status_code == 429 and "Try again" in locked.json()["error"]
     common._failed_logins.clear()
     assert client.post("/login", json={"login": "lock@test.com", "password": "right"}).status_code == 200
+
+
+def test_customer_and_shop_can_cancel_a_waiting_pickup(client, seeded, db):
+    now = datetime.utcnow()
+    db.batches.insert_one({"batch_id": "CB1", "product_id": "P001", "product_name": "Idli Batter",
+                           "vendor_id": ACTIVE_VENDOR, "status": "received", "volume_kg": 6,
+                           "manufactured_at": now - timedelta(hours=1), "updated_at": now})
+    try:
+        as_customer("C1")
+        first = client.post("/customer-orders", json={"vendor_id": ACTIVE_VENDOR, "items": [
+            {"product_name": "Idli Batter", "quantity_kg": 6}]}).json()["order"]
+        assert client.post(f"/customer-orders/{first['order_id']}/cancel").json()["status"] == "cancelled"
+        assert client.post(f"/customer-orders/{first['order_id']}/cancel").status_code == 409
+        # the hold is gone, so the same 6 kg can be ordered again
+        second = client.post("/customer-orders", json={"vendor_id": ACTIVE_VENDOR, "items": [
+            {"product_name": "Idli Batter", "quantity_kg": 6}]}).json()["order"]
+        as_customer("C2")  # someone else's order cannot be cancelled
+        assert client.post(f"/customer-orders/{second['order_id']}/cancel").status_code == 404
+        as_admin()
+        shop = client.post(f"/vendors/{ACTIVE_VENDOR}/pickups/{second['order_id']}/cancel", json={"reason": "spoiled"})
+        assert shop.json()["status"] == "cancelled"
+        assert db.orders.find_one({"order_id": second["order_id"]})["cancelled_by"] == "shop"
+    finally:
+        as_admin()
+
+
+def test_stock_alerts_are_logged_once(client, seeded, db):
+    now = datetime.utcnow()
+    db.products.insert_one({"product_id": "P001", "product_name": "Idli Batter",
+                            "shelf_life_fridge_hrs": 72, "shelf_life_ambient_hrs": 24})
+    # 2 of 10 kg left (low) and 70 of 72 hours used (expiring soon)
+    db.batches.insert_one({"batch_id": "AL1", "product_id": "P001", "product_name": "Idli Batter",
+                           "vendor_id": ACTIVE_VENDOR, "status": "received", "volume_kg": 10,
+                           "remaining_volume_kg": 2, "manufactured_at": now - timedelta(hours=70)})
+    first = main.log_stock_alerts()
+    actions = {log["action"] for log in db.logs.find({"type": "alert"})}
+    assert {"alert_low_stock", "alert_expiring"} <= actions and first >= 2
+    assert main.log_stock_alerts() == 0  # nothing new on the next check

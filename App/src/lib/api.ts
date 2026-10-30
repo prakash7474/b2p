@@ -77,7 +77,7 @@ export type PickupOrder = StringMap & {
   customer_name?: string | null;
   items: { product_name: string; quantity_kg: number; price_per_kg?: number | null; line_total?: number | null }[];
   total: number;
-  status: "to_collect" | "collecting" | "collected" | "expired";
+  status: "to_collect" | "collecting" | "collected" | "expired" | "cancelled";
   pickup_code: string;
   created_at: string;
   hold_until: string;
@@ -440,6 +440,10 @@ export const api = {
     return data.order;
   },
 
+  cancelMyOrder(orderId: string) {
+    return request<{ message?: string }>(`/customer-orders/${encodeURIComponent(orderId)}/cancel`, { method: "POST" });
+  },
+
   async getMyOrders() {
     const data = await request<{ orders?: PickupOrder[] }>("/customer-orders");
     return data.orders ?? [];
@@ -449,6 +453,13 @@ export const api = {
   async getPickups(vendorKey: string) {
     const data = await request<{ orders?: PickupOrder[] }>(`/vendors/${encodeURIComponent(vendorKey)}/pickups`);
     return data.orders ?? [];
+  },
+
+  cancelPickup(vendorKey: string, orderId: string, reason = "") {
+    return request<{ message?: string }>(
+      `/vendors/${encodeURIComponent(vendorKey)}/pickups/${encodeURIComponent(orderId)}/cancel`,
+      { method: "POST", body: { reason } },
+    );
   },
 
   collectPickup(vendorKey: string, orderId: string, code: string) {

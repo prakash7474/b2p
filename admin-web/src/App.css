@@ -510,6 +510,18 @@ button:disabled {
   width: auto;
 }
 
+.log-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .activity-icon-alert {
   background: var(--danger-bg);
   color: var(--danger);

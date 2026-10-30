@@ -158,6 +158,8 @@ def ensure_indexes():
     _create_index(COLS["users"], [("email", 1)], "users_email_idx")
     _create_index(COLS["users"], [("phone", 1)], "users_phone_idx")
     _create_index(COLS["restock_requests"], [("vendor_id", 1), ("status", 1)], "restock_vendor_status_idx")
+    # The alert logger looks each alert up by key on every 15-minute check.
+    _create_index(COLS["logs"], [("alert_key", 1)], "logs_alert_key_idx", sparse=True)
 
 
 EXPIRY_CHECK_SECONDS = 15 * 60
@@ -173,6 +175,10 @@ def _expiry_loop():
             ml.refresh_forecasts()
         except Exception as e:
             print(f"[WARN] Forecast refresh failed: {e}")
+        try:
+            log_stock_alerts()
+        except Exception as e:
+            print(f"[WARN] Alert logging failed: {e}")
         threading.Event().wait(EXPIRY_CHECK_SECONDS)
 
 
@@ -726,6 +732,51 @@ def _shop_stock(vendors=None):
     return shops
 
 
+# Each alert is logged once per day (once per sales window for "below forecast"; once per batch for
+# high spoilage risk), not on every 15-minute check. Expiry is logged by expire_batches() itself.
+ALERT_ACTIONS = {"expiring": "alert_expiring", "low": "alert_low_stock", "below_forecast": "alert_below_forecast"}
+
+
+def _log_alert_once(key, action, message, vendor_id, **extra):
+    if COLS["logs"].find_one({"alert_key": key}, {"_id": 1}):
+        return False
+    _log(action, message, vendor_id, kind="alert", alert_key=key, **extra)
+    return True
+
+
+def log_stock_alerts():
+    """Write the shops' stock and spoilage alerts to the Activity log (run by the background timer)."""
+    day, window = ml._slot_of(datetime.datetime.utcnow())
+    written = 0
+    for shop in _shop_stock():
+        for alert in shop["alerts"]:
+            action = ALERT_ACTIONS.get(alert["kind"])
+            if not action:
+                continue
+            period = f"{day}-{window}" if alert["kind"] == "below_forecast" else str(day)
+            key = f"{shop['vendor_id']}:{alert['product']}:{alert['kind']}:{period}"
+            written += _log_alert_once(key, action, f"{shop['shop_name']}: {alert['text']}", shop["vendor_id"])
+
+    if ml.spoilage_bundle:
+        weather = ml._latest_weather()
+        for vendor in COLS["vendors"].find({"vendor_id": {"$exists": True}}):
+            for batch in _held_batches(vendor):
+                key = f"{vendor['vendor_id']}:{batch.get('batch_id')}:spoilage_high"
+                # The model only runs for batches not already flagged.
+                if batch["expired"] or COLS["logs"].find_one({"alert_key": key}, {"_id": 1}):
+                    continue
+                row = ml._batch_evaluation(vendor, batch, weather)
+                if row.get("risk_label") == "High":
+                    made = _field(batch, "manufactured_at", "created_at")
+                    when = f", made {made:%d %b %H:%M}" if isinstance(made, datetime.datetime) else ""
+                    written += _log_alert_once(
+                        key, "alert_spoilage_high",
+                        f"{vendor.get('shop_name') or vendor['vendor_id']}: {row['product_name']}{when} is at high "
+                        f"spoilage risk ({row['risk_score']:g}%); sell it first or return it",
+                        vendor["vendor_id"], batch_id=batch.get("batch_id"))
+    return written
+
+
 @app.get("/shop-stock")
 def shop_stock(user: dict = Depends(current_user)):
     require_role(user)
@@ -1223,6 +1274,42 @@ def shop_pickups(vendor_id: str = Path(...), user: dict = Depends(current_user))
     _expire_pickups({"vendor_id": vendor["vendor_id"]})
     orders = sorted(_open_pickups(vendor), key=lambda o: o["created_at"])
     return {"orders": [_pickup_view(o) for o in orders]}
+
+
+def _cancel_pickup(query, by, reason=""):
+    """Close a pickup that is still waiting; its held kg is free again at once."""
+    order = COLS["orders"].find_one({**query, "kind": "pickup"})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order["status"] != "to_collect":
+        raise HTTPException(status_code=409, detail=f"This order is already {order['status']}")
+    now = datetime.datetime.utcnow()
+    if COLS["orders"].update_one({"_id": order["_id"], "status": "to_collect"},
+                                 {"$set": {"status": "cancelled", "cancelled_at": now, "cancelled_by": by,
+                                           "cancel_reason": reason}}).modified_count == 0:
+        raise HTTPException(status_code=409, detail="This order changed meanwhile; refresh and try again")
+    who = "The customer" if by == "customer" else order.get("shop_name") or "The shop"
+    _log("pickup_cancelled", f"{who} cancelled a pickup order at {order.get('shop_name') or order['vendor_id']}"
+                             + (f": {reason}" if reason else ""), order["vendor_id"])
+    return {"message": "Order cancelled", "order_id": order["order_id"], "status": "cancelled"}
+
+
+@app.post("/customer-orders/{order_id}/cancel")
+def cancel_my_pickup(order_id: str = Path(...), user: dict = Depends(current_user)):
+    require_role(user, "customer")
+    return _cancel_pickup({"order_id": order_id, "user_id": user["sub"]}, "customer")
+
+
+@app.post("/vendors/{vendor_id}/pickups/{order_id}/cancel")
+def cancel_shop_pickup(vendor_id: str = Path(...), order_id: str = Path(...), data: dict = Body(default={}),
+                       user: dict = Depends(current_user)):
+    """The shop cannot hand the order over (e.g. the batter was spoiled)."""
+    require_vendor(user, vendor_id)
+    vendor = _find_vendor(vendor_id)
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return _cancel_pickup({"order_id": order_id, "vendor_id": vendor["vendor_id"]}, "shop",
+                          str(data.get("reason") or "").strip())
 
 
 @app.post("/vendors/{vendor_id}/pickups/{order_id}/collect")

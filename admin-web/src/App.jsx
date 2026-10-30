@@ -96,7 +96,14 @@ const LOG_ACTIONS = {
   create_inventory: "stock",
   update_inventory: "stock",
   register_customer: "customer",
-  login_customer: "customer"
+  login_customer: "customer",
+  pickup_order: "customer",
+  pickup_collected: "customer",
+  pickup_cancelled: "customer",
+  alert_expiring: "spoilage",
+  alert_spoilage_high: "spoilage",
+  alert_low_stock: "stock",
+  alert_below_forecast: "stock"
 };
 
 // Entries saved without a message get a readable line instead of the raw action name.
@@ -1283,12 +1290,37 @@ function Batches({ batches, products, vendors, search, setSearch, refresh }) {
 
 const LOG_RANGES = [["1", "Last 24 hours"], ["7", "Last 7 days"], ["30", "Last 30 days"], ["all", "All time"]];
 
+// The backend hands the log out in pages of this size, newest first.
+const LOG_PAGE = 500;
+
 function Activity({ logs, search, setSearch }) {
   const [category, setCategory] = useState("all");
   const [range, setRange] = useState("7");
+  // Pages older than the first one, fetched on demand ("Load older entries").
+  const [older, setOlder] = useState([]);
+  const [hasMore, setHasMore] = useState(logs.length >= LOG_PAGE);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const loadOlder = async () => {
+    try {
+      setLoadingMore(true);
+      const data = await request(`/logs?limit=${LOG_PAGE}&skip=${logs.length + older.length}`);
+      const page = data.logs || [];
+      setOlder((prev) => [...prev, ...page]);
+      setHasMore(page.length >= LOG_PAGE);
+    } catch {
+      setHasMore(false);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const since = range === "all" ? 0 : Date.now() - Number(range) * 86400000;
-  const entries = logs.map((log) => ({ log, category: logCategory(log), time: logTime(log) }));
+  // New entries shift the pages, so an older page can repeat a few rows; keep each entry once.
+  const seen = new Set();
+  const entries = [...logs, ...older]
+    .filter((log) => !seen.has(log._id) && seen.add(log._id))
+    .map((log) => ({ log, category: logCategory(log), time: logTime(log) }));
   const inRange = entries.filter((e) => !since || (e.time && e.time.getTime() >= since));
   const counts = inRange.reduce((acc, e) => ({ ...acc, [e.category]: (acc[e.category] || 0) + 1 }), {});
   const listed = inRange.filter(
@@ -1345,6 +1377,16 @@ function Activity({ logs, search, setSearch }) {
         </div>
 
         {listed.length === 0 && <div className="empty-state">No activity for this filter.</div>}
+
+        <div className="log-more">
+          <span>Showing the newest {entries.length} entries{hasMore ? "" : " (all of them)"}</span>
+          {hasMore && (
+            <button className="secondary-btn small-btn" disabled={loadingMore} onClick={loadOlder}>
+              <RefreshCw size={13} className={loadingMore ? "spin" : ""} />
+              {loadingMore ? "Loading..." : "Load older entries"}
+            </button>
+          )}
+        </div>
       </div>
     </PageLayout>
   );
