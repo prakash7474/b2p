@@ -7,7 +7,7 @@ import { Card, EmptyState, SectionTitle, StatCard, StatGrid } from "@/src/compon
 import { LoadingScreen, Screen } from "@/src/components/layout";
 import { Button, SecondaryButton } from "@/src/components/controls";
 import { AlertBox, BarMeter, RiskBadge } from "@/src/components/status";
-import { api, madeLabel, type ActivityLog, type RiskReport } from "@/src/lib/api";
+import { api, madeLabel, type ActivityLog, type RiskReport, type ShopAlert } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
 import { colors, fonts, radius, riskColor } from "@/src/theme";
 
@@ -19,6 +19,7 @@ export default function DashboardScreen() {
   const [report, setReport] = useState<RiskReport | null>(null);
   const [logs, setLogs] = useState<ActivityLog[] | null>(null);
   const [restockKg, setRestockKg] = useState<number | null>(null);
+  const [alerts, setAlerts] = useState<ShopAlert[]>([]);
   const [notice, setNotice] = useState<Notice>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -32,7 +33,8 @@ export default function DashboardScreen() {
       const [riskData, logData] = await Promise.all([api.getRisk(vendorId), api.getLogs()]);
       setReport(riskData);
       setLogs(logData);
-      // The restock figure is a nice-to-have: a forecast failure must not hide the rest.
+      // Alerts and the restock figure are extras: a failure there must not hide the rest.
+      api.getAlerts(vendorId).then(setAlerts).catch(() => setAlerts([]));
       api.getForecast(vendorId)
         .then((result) => setRestockKg(Number(result.summary?.refill_quantity ?? 0)))
         .catch(() => setRestockKg(null));
@@ -104,6 +106,30 @@ export default function DashboardScreen() {
       onRefresh={refresh}
     >
       {notice ? <AlertBox type={notice.type} message={notice.text} /> : null}
+
+      {alerts.length > 0 ? (
+        <View>
+          <SectionTitle title="Needs attention" subtitle="Your stock right now, most urgent first" />
+          <Card style={styles.alertCard}>
+            {alerts.map((alert, index) => (
+              <View key={`${alert.kind}-${index}`} style={[styles.alertRow, index === alerts.length - 1 && styles.rowLast]}>
+                <MaterialCommunityIcons
+                  name={alert.level === "info" ? "truck-delivery-outline" : "alert-circle-outline"}
+                  size={20}
+                  color={ALERT_COLORS[alert.level]}
+                />
+                <Text style={[styles.alertText, alert.level !== "info" && { color: ALERT_COLORS[alert.level] }]}>
+                  {alert.text}
+                </Text>
+              </View>
+            ))}
+            <View style={styles.alertActions}>
+              <Button label="View batches" compact onPress={() => router.push("/(vendor)/inventory")} />
+              <SecondaryButton label="Request batches" compact onPress={() => router.push("/(vendor)/request-batches")} />
+            </View>
+          </Card>
+        </View>
+      ) : null}
 
       <StatGrid>
         <StatCard
@@ -273,7 +299,35 @@ export default function DashboardScreen() {
   );
 }
 
+const ALERT_COLORS = { danger: colors.danger, warning: colors.warning, info: colors.primary };
+
 const styles = StyleSheet.create({
+  alertCard: {
+    borderColor: colors.danger,
+  },
+  alertRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+  },
+  alertText: {
+    flex: 1,
+    fontSize: 15,
+    lineHeight: 21,
+    color: colors.text,
+    fontFamily: fonts.medium,
+  },
+  alertActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    padding: 16,
+    paddingTop: 4,
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",

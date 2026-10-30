@@ -129,6 +129,12 @@ export type VendorBatch = StringMap & {
   expired?: boolean;
 };
 
+export type ShopAlert = {
+  kind: "expired" | "expiring" | "low" | "below_forecast" | "awaiting";
+  level: "danger" | "warning" | "info";
+  text: string;
+};
+
 export type AvailableBatch = StringMap & {
   batch_id?: string;
   product_name?: string;
@@ -336,6 +342,12 @@ export const api = {
       message?: string;
     }>(`/vendors/${encodeURIComponent(vendorKey)}/demand-forecast`);
     return { forecast: data?.forecast ?? [], summary: data?.summary, window: data?.window, message: data?.message };
+  },
+
+  /** The shop's stock alerts, problems first (same rules as the admin's Inventory page). */
+  async getAlerts(vendorKey: string): Promise<ShopAlert[]> {
+    const data = await request<{ alerts?: ShopAlert[] }>(`/vendors/${encodeURIComponent(vendorKey)}/alerts`);
+    return data.alerts ?? [];
   },
 
   async getRisk(vendorKey: string): Promise<RiskReport> {

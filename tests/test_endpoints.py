@@ -1037,3 +1037,18 @@ def test_dashboard_summary_totals_demand_and_what_to_make(client, seeded):
     assert body["stock"]["sellable_kg"] == 5.0
     assert body["unassigned"]["batches"] == 1 and body["unassigned"]["oldest_hours"] == 10.0
     assert body["demand"]["shops_forecast"] == 1
+
+
+def test_vendor_sees_its_own_alerts_problems_first(client, seeded, db):
+    now = datetime.utcnow()
+    db.products.insert_one({"product_id": "P001", "product_name": "Idli Batter",
+                            "shelf_life_fridge_hrs": 72, "shelf_life_ambient_hrs": 24})
+    db.batches.insert_many([
+        {"batch_id": "A1", "product_id": "P001", "product_name": "Idli Batter", "vendor_id": ACTIVE_VENDOR,
+         "status": "assigned", "volume_kg": 5, "manufactured_at": now - timedelta(hours=1)},
+        {"batch_id": "A2", "product_id": "P001", "product_name": "Idli Batter", "vendor_id": ACTIVE_VENDOR,
+         "status": "received", "volume_kg": 4, "manufactured_at": now - timedelta(hours=80)},
+    ])
+    body = client.get(f"/vendors/{ACTIVE_VENDOR}/alerts").json()
+    assert [a["kind"] for a in body["alerts"]] == ["expired", "awaiting"]
+    assert client.get("/vendors/V999/alerts").status_code == 404

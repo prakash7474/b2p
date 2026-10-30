@@ -1,13 +1,29 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Redirect, Tabs } from "expo-router";
+import { useEffect, useState } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { api } from "@/src/lib/api";
 import { useAuth } from "@/src/lib/auth";
 import { colors, fonts } from "@/src/theme";
 
 export default function VendorLayout() {
-  const { session } = useAuth();
+  const { session, vendorId } = useAuth();
   const insets = useSafeAreaInsets();
+  const [problems, setProblems] = useState(0);
+
+  // Count of stock problems for the Batches tab badge, checked every two minutes.
+  useEffect(() => {
+    if (!vendorId) return;
+    const check = () =>
+      api
+        .getAlerts(vendorId)
+        .then((alerts) => setProblems(alerts.filter((alert) => alert.level !== "info").length))
+        .catch(() => setProblems(0));
+    void check();
+    const timer = setInterval(check, 120_000);
+    return () => clearInterval(timer);
+  }, [vendorId]);
 
   if (!session) {
     return <Redirect href="/(auth)/login" />;
@@ -54,6 +70,8 @@ export default function VendorLayout() {
         name="inventory"
         options={{
           title: "Batches",
+          tabBarBadge: problems > 0 ? problems : undefined,
+          tabBarBadgeStyle: { backgroundColor: colors.danger, color: "#fff", fontFamily: fonts.bold },
           tabBarIcon: ({ color }) => (
             <MaterialCommunityIcons name="package-variant" size={22} color={color} />
           ),

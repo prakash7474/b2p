@@ -876,9 +876,10 @@ def _kg(value):
     return f"{round(value, 1):g} kg"
 
 
-def _shop_stock():
-    """What every shop holds right now, per product, built from batches (the source of truth),
-    with the alerts the admin should see for that shop."""
+def _shop_stock(vendors=None):
+    """What every shop (or the given ones) holds right now, per product, built from batches
+    (the source of truth), with the alerts for that shop. The admin's Inventory page and the
+    shop's own app read the same alerts."""
     now = datetime.datetime.utcnow()
     # Latest forecast per shop and product for the window still open, from the predictions log.
     forecasts = {}
@@ -894,7 +895,7 @@ def _shop_stock():
                           "expired_kg": 0.0, "threshold_kg": 0.0, "batches": 0, "next_expiry_hours": None}
 
     shops = []
-    for vendor in COLS["vendors"].find():
+    for vendor in (vendors if vendors is not None else COLS["vendors"].find()):
         held = _held_batches(vendor)
         if not held and str(_vendor_status(vendor)).lower() not in ("active", "approved"):
             continue
@@ -951,7 +952,7 @@ def _shop_stock():
                                        f"on hand, below the {_kg(forecast)} forecast"})
             if row["awaiting_kg"]:
                 alerts.append({"kind": "awaiting", "level": "info",
-                               "text": f"{name}: {_kg(row['awaiting_kg'])} waiting for the shop to confirm receipt"})
+                               "text": f"{name}: {_kg(row['awaiting_kg'])} on the way, not yet confirmed as received"})
 
         rows = sorted(products.values(), key=lambda r: r["product_name"])
         shops.append({
@@ -975,6 +976,21 @@ def shop_stock(user: dict = Depends(current_user)):
     require_role(user)
     shops = _shop_stock()
     return {"count": len(shops), "shops": shops}
+
+
+@app.get("/vendors/{vendor_id}/alerts")
+def vendor_alerts(vendor_id: str = Path(...), user: dict = Depends(current_user)):
+    """The shop's own stock alerts (expired, expiring soon, low, below forecast, on the way)."""
+    require_vendor(user, vendor_id)
+    vendor = _find_vendor(vendor_id)
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    shops = _shop_stock([vendor])
+    alerts = shops[0]["alerts"] if shops else []
+    # Problems first: danger, then warning, then info.
+    order = {"danger": 0, "warning": 1, "info": 2}
+    alerts.sort(key=lambda a: order.get(a["level"], 3))
+    return {"count": len(alerts), "alerts": alerts}
 
 
 @app.get("/dashboard-summary")

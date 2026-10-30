@@ -544,52 +544,77 @@ const LOCALITY_OPTIONS = [
   ["residential_premium", "Residential, premium"]
 ];
 
-function Vendors({ vendors, search, setSearch, refresh }) {
+const RISK_BADGE_CLASS = { High: "risk-badge risk-high", Medium: "risk-badge risk-medium", Low: "risk-badge risk-low" };
+
+function Vendors({ vendors, logs, search, setSearch, refresh, openShop }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [openDetails, setOpenDetails] = useState("");
+  const { items: shops } = useList("/shop-stock", "shops");
+  const [risk, setRisk] = useState({});
+  const refreshTick = useContext(RefreshContext);
 
-  const setLocality = async (vendor, locality) => {
-    const id = getValue(vendor, ["vendor_id", "_id"], "");
+  const idOf = (vendor) => getValue(vendor, ["vendor_id", "_id"], "");
+  const nameOf = (vendor) => getValue(vendor, ["shop_name", "name", "vendor_name", "business_name"], "Shop");
+
+  // Each live shop's spoilage risk, scored in parallel; a card shows "..." until its score arrives.
+  useEffect(() => {
+    let live = true;
+    liveVendors(vendors).forEach((vendor) => {
+      request(`/vendors/${vendor.vendor_id}/spoilage-risk`)
+        .then((data) => live && setRisk((prev) => ({ ...prev, [vendor.vendor_id]: data.aggregate_risk_label || "None" })))
+        .catch(() => live && setRisk((prev) => ({ ...prev, [vendor.vendor_id]: "None" })));
+    });
+    return () => {
+      live = false;
+    };
+  }, [vendors, refreshTick]);
+
+  const act = async (vendor, path, body, done) => {
+    const id = idOf(vendor);
     try {
       setBusy(id);
-      const data = await request(`/vendors/${id}/locality`, {
-        method: "POST",
-        body: JSON.stringify({ locality_tier: locality })
-      });
-      setMessage(data.error || `${id}: locality set to ${locality}. Its demand forecast now uses this area.`);
+      const data = await request(`/vendors/${id}/${path}`, { method: "POST", body: JSON.stringify(body) });
+      setMessage(data.error || done);
       await refresh();
     } catch (error) {
-      setMessage(error.message || "Unable to update locality.");
+      setMessage(error.message || "Unable to update the shop.");
     } finally {
       setBusy("");
     }
   };
+  const setStatus = (vendor, status) =>
+    act(vendor, "status", { status }, `${nameOf(vendor)} is now ${formatStatus(status).toLowerCase()}.`);
+  const setLocality = (vendor, locality) =>
+    act(vendor, "locality", { locality_tier: locality },
+      `${nameOf(vendor)}: area set to ${formatStatus(locality)}. Its demand forecast now uses this area.`);
 
-  const setStatus = async (vendor, status) => {
-    const id = getValue(vendor, ["vendor_id", "_id"], "");
-    try {
-      setBusy(id);
-      const data = await request(`/vendors/${id}/status`, {
-        method: "POST",
-        body: JSON.stringify({ status })
-      });
-      setMessage(data.error || data.message);
-      await refresh();
-    } catch (error) {
-      setMessage(error.message || "Unable to update vendor.");
-    } finally {
-      setBusy("");
-    }
-  };
+  // App logs carry vendor_id; older seed logs name the shop in related_to.
+  const lastLog = (vendor) =>
+    logs.find((log) => (log.vendor_id || log.related_to?.id) === vendor.vendor_id);
+  const query = search.toLowerCase();
+  const matches = (vendor) => nameOf(vendor).toLowerCase().includes(query);
 
-  const filtered = vendors.filter((vendor) =>
-    JSON.stringify(vendor).toLowerCase().includes(search.toLowerCase())
-  );
+  const pending = vendors.filter((v) => vendorStatus(v).toLowerCase() === "pending" && matches(v));
+  const cards = vendors
+    .filter((v) => vendorStatus(v).toLowerCase() !== "pending" && matches(v))
+    .map((vendor) => {
+      const stock = shops.find((shop) => shop.vendor_id === vendor.vendor_id);
+      const problems = (stock?.alerts || []).filter((a) => a.level !== "info").length;
+      const incoming = (stock?.products || []).reduce((sum, row) => sum + Number(row.awaiting_kg || 0), 0);
+      return { vendor, stock, problems, incoming };
+    })
+    // Shops that need the admin first, then by name.
+    .sort((a, b) => b.problems - a.problems || nameOf(a.vendor).localeCompare(nameOf(b.vendor)));
+  const needAttention = cards.filter((card) => card.problems > 0);
+  const listed = filter === "attention" ? needAttention : cards;
+  const kg = (value) => `${Number(Number(value || 0).toFixed(1))} kg`;
 
   return (
     <PageLayout
       title="Vendors"
-      subtitle="Manage registered vendors"
+      subtitle="One card per shop; the ones that need you come first"
       search={search}
       setSearch={setSearch}
     >
@@ -600,106 +625,134 @@ function Vendors({ vendors, search, setSearch, refresh }) {
         </div>
       )}
 
-      <div className="table-card">
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Vendor ID</th>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Phone</th>
-                <th>Locality</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((vendor, index) => {
-                const status = vendorStatus(vendor);
+      {pending.length > 0 && (
+        <section className="pending-strip">
+          <div className="pending-head">
+            <h3>Waiting for approval</h3>
+            <span>{pending.length} new sign-up{pending.length === 1 ? "" : "s"}</span>
+          </div>
+          {pending.map((vendor) => (
+            <div className="pending-row" key={idOf(vendor)}>
+              <div className="pending-main">
+                <strong>{nameOf(vendor)}</strong>
+                <span>
+                  {[
+                    getValue(vendor, ["owner_name"], ""),
+                    getValue(vendor, ["phone", "mobile"], ""),
+                    getValue(vendor, ["email"], ""),
+                    formatStatus(getValue(vendor, ["localityTier", "locality_tier"], "mixed")),
+                    getValue(vendor, ["created_at"], "") && `signed up ${formatDate(vendor.created_at)}`
+                  ].filter(Boolean).join(" · ")}
+                </span>
+              </div>
+              <div className="action-buttons">
+                <button className="primary-btn small-btn" disabled={busy === idOf(vendor)} onClick={() => setStatus(vendor, "active")}>
+                  <CheckCircle2 size={13} />
+                  Approve
+                </button>
+                <button className="secondary-btn small-btn danger-btn" disabled={busy === idOf(vendor)} onClick={() => setStatus(vendor, "rejected")}>
+                  <X size={13} />
+                  Reject
+                </button>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
 
-                return (
-                  <tr key={vendor._id || vendor.id || index}>
-                    <td>
-                      {getValue(
-                        vendor,
-                        ["vendor_id", "vendorId", "id", "_id"],
-                        "-"
-                      )}
-                    </td>
-                    <td>
-                      {getValue(
-                        vendor,
-                        ["shop_name", "name", "vendor_name", "business_name"],
-                        "-"
-                      )}
-                    </td>
-                    <td>{getValue(vendor, ["email"], "-")}</td>
-                    <td>{getValue(vendor, ["phone", "mobile"], "-")}</td>
-                    <td>
-                      <select
-                        aria-label={`Locality of ${getValue(vendor, ["vendor_id", "_id"], "")}`}
-                        value={(() => {
-                          const tier = getValue(vendor, ["localityTier", "locality_tier"], "mixed");
-                          return tier === "commercial" ? "commercial_offices" : tier;
-                        })()}
-                        disabled={busy === getValue(vendor, ["vendor_id", "_id"], "")}
-                        onChange={(e) => setLocality(vendor, e.target.value)}
-                      >
-                        {LOCALITY_OPTIONS.map(([value, label]) => (
-                          <option key={value} value={value}>{label}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <span className={statusClass(status)}>
-                        {formatStatus(status)}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="action-buttons">
-                        {status !== "active" && (
-                          <button
-                            className="primary-btn small-btn"
-                            disabled={busy === getValue(vendor, ["vendor_id", "_id"], "")}
-                            onClick={() => setStatus(vendor, "active")}
-                          >
-                            <CheckCircle2 size={13} />
-                            Approve
-                          </button>
-                        )}
-                        {status === "pending" && (
-                          <button
-                            className="secondary-btn small-btn"
-                            disabled={busy === getValue(vendor, ["vendor_id", "_id"], "")}
-                            onClick={() => setStatus(vendor, "rejected")}
-                          >
-                            <X size={13} />
-                            Reject
-                          </button>
-                        )}
-                        {status === "active" && (
-                          <button
-                            className="secondary-btn small-btn"
-                            disabled={busy === getValue(vendor, ["vendor_id", "_id"], "")}
-                            onClick={() => setStatus(vendor, "suspended")}
-                          >
-                            <X size={13} />
-                            Suspend
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      <div className="filter-pills vendor-filters" role="group" aria-label="Show shops">
+        <button className={`filter-pill ${filter === "all" ? "active" : ""}`} aria-pressed={filter === "all"} onClick={() => setFilter("all")}>
+          All <span>{cards.length}</span>
+        </button>
+        <button className={`filter-pill ${filter === "attention" ? "active" : ""}`} aria-pressed={filter === "attention"} onClick={() => setFilter("attention")}>
+          Needs attention <span>{needAttention.length}</span>
+        </button>
+      </div>
 
-          {filtered.length === 0 && (
-            <div className="empty-state">No vendors found.</div>
-          )}
+      {listed.length === 0 && (
+        <div className="table-card">
+          <div className="empty-state">{filter === "attention" ? "No shop needs attention right now." : "No shops found."}</div>
         </div>
+      )}
+
+      <div className="vendor-grid">
+        {listed.map(({ vendor, stock, problems, incoming }) => {
+          const id = idOf(vendor);
+          const status = vendorStatus(vendor).toLowerCase();
+          const level = risk[vendor.vendor_id];
+          const log = lastLog(vendor);
+          return (
+            <article className="vendor-card" key={id}>
+              <div className="vendor-card-head">
+                <div>
+                  <h3>{nameOf(vendor)}</h3>
+                  <span>
+                    {formatStatus(getValue(vendor, ["localityTier", "locality_tier"], "mixed"))}
+                    {" · "}
+                    {getValue(vendor, ["hasRefrigerator", "has_refrigerator"], true) ? "Fridge" : "No fridge"}
+                  </span>
+                </div>
+                {status !== "active" && status !== "approved" ? (
+                  <span className={statusClass(status)}>{formatStatus(status)}</span>
+                ) : (
+                  <span className={RISK_BADGE_CLASS[level] || "risk-badge risk-none"}>
+                    {level === undefined ? "..." : RISK_BADGE_CLASS[level] ? `${level} risk` : "No stock"}
+                  </span>
+                )}
+              </div>
+
+              <div className="vendor-stats">
+                <div><span>Sellable</span><strong>{kg(stock?.sellable_kg)}</strong></div>
+                <div><span>On the way</span><strong>{kg(incoming)}</strong></div>
+                <div><span>Alerts</span><strong className={problems ? "alert-count" : ""}>{problems}</strong></div>
+              </div>
+
+              <p className="vendor-activity">
+                {log ? `${logText(log)} · ${logTime(log)?.toLocaleString() || ""}` : "No recorded activity yet"}
+              </p>
+
+              {openDetails === id && (
+                <div className="vendor-details">
+                  <div>{[getValue(vendor, ["owner_name"], ""), getValue(vendor, ["phone", "mobile"], ""), getValue(vendor, ["email"], "")].filter(Boolean).join(" · ") || "No contact details"}</div>
+                  <label>
+                    Area type
+                    <select
+                      value={(() => {
+                        const tier = getValue(vendor, ["localityTier", "locality_tier"], "mixed");
+                        return tier === "commercial" ? "commercial_offices" : tier;
+                      })()}
+                      disabled={busy === id}
+                      onChange={(e) => setLocality(vendor, e.target.value)}
+                    >
+                      {LOCALITY_OPTIONS.map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              )}
+
+              <div className="action-buttons vendor-actions">
+                <button className="primary-btn small-btn" onClick={() => openShop(nameOf(vendor))}>
+                  View stock
+                </button>
+                <button className="secondary-btn small-btn" onClick={() => setOpenDetails(openDetails === id ? "" : id)}>
+                  {openDetails === id ? "Hide details" : "Details"}
+                </button>
+                {openDetails === id && (status === "active" || status === "approved") && (
+                  <button className="secondary-btn small-btn danger-btn" disabled={busy === id} onClick={() => setStatus(vendor, "suspended")}>
+                    Suspend
+                  </button>
+                )}
+                {openDetails === id && (status === "suspended" || status === "rejected") && (
+                  <button className="secondary-btn small-btn" disabled={busy === id} onClick={() => setStatus(vendor, "active")}>
+                    Reactivate
+                  </button>
+                )}
+              </div>
+            </article>
+          );
+        })}
       </div>
     </PageLayout>
   );
@@ -707,12 +760,15 @@ function Vendors({ vendors, search, setSearch, refresh }) {
 
 const ALERT_CLASSES = { danger: "alert alert-error", warning: "alert alert-warning", info: "alert alert-info" };
 
-function Inventory({ search, setSearch, initialAttention = false }) {
+function Inventory({ search, setSearch, initialAttention = false, initialShop = "" }) {
   const { items: shops, loaded, message } = useList("/shop-stock", "shops");
   const [attentionOnly, setAttentionOnly] = useState(initialAttention);
+  // Opened from a Vendors card: show that one shop until the admin asks for all.
+  const [onlyShop, setOnlyShop] = useState(initialShop);
 
   const query = search.toLowerCase();
   const listed = shops.filter((shop) => {
+    if (onlyShop && shop.shop_name !== onlyShop) return false;
     if (attentionOnly && !shop.alerts.some((a) => a.level !== "info")) return false;
     return [shop.shop_name, ...shop.products.map((p) => p.product_name)].join(" ").toLowerCase().includes(query);
   });
@@ -733,6 +789,12 @@ function Inventory({ search, setSearch, initialAttention = false }) {
       )}
 
       <div className="inventory-toolbar">
+        {onlyShop && (
+          <button className="secondary-btn small-btn toggle-on" onClick={() => setOnlyShop("")}>
+            <X size={13} />
+            Showing {onlyShop} · show all shops
+          </button>
+        )}
         <button className={`secondary-btn small-btn ${attentionOnly ? "toggle-on" : ""}`}
           onClick={() => setAttentionOnly((v) => !v)}>
           <AlertTriangle size={13} />
@@ -2083,8 +2145,10 @@ function App() {
   const [page, setPage] = useState("dashboard");
   // The dashboard can open Inventory already filtered to shops that need attention.
   const [inventoryAttention, setInventoryAttention] = useState(false);
+  const [inventoryShop, setInventoryShop] = useState("");
   const goTo = (next) => {
     setInventoryAttention(false);
+    setInventoryShop("");
     setPage(next);
   };
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -2250,9 +2314,14 @@ function App() {
           {page === "vendors" && (
             <Vendors
               vendors={vendors}
+              logs={logs}
               search={search}
               setSearch={setSearch}
               refresh={loadData}
+              openShop={(name) => {
+                setInventoryShop(name);
+                setPage("inventory");
+              }}
             />
           )}
 
@@ -2275,10 +2344,11 @@ function App() {
 
           {page === "inventory" && (
             <Inventory
-              key={inventoryAttention ? "attention" : "all"}
+              key={`${inventoryAttention}-${inventoryShop}`}
               search={search}
               setSearch={setSearch}
               initialAttention={inventoryAttention}
+              initialShop={inventoryShop}
             />
           )}
 
