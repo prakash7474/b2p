@@ -938,20 +938,20 @@ def _shop_stock(vendors=None):
             if row["next_expiry_hours"] is not None:
                 row["next_expiry_hours"] = round(row["next_expiry_hours"], 1)
             if row["expired_kg"]:
-                alerts.append({"kind": "expired", "level": "danger",
+                alerts.append({"product": name, "kind": "expired", "level": "danger",
                                "text": f"{name}: {_kg(row['expired_kg'])} expired, return or discard it"})
             if row["next_expiry_hours"] is not None and row["next_expiry_hours"] <= EXPIRY_SOON_HOURS:
-                alerts.append({"kind": "expiring", "level": "warning",
+                alerts.append({"product": name, "kind": "expiring", "level": "warning",
                                "text": f"{name}: a batch expires in {row['next_expiry_hours']:g} h, sell it first"})
             if row["low_stock"]:
-                alerts.append({"kind": "low", "level": "warning",
+                alerts.append({"product": name, "kind": "low", "level": "warning",
                                "text": f"{name}: low stock, {_kg(row['sellable_kg'])} left"})
             if forecast is not None and row["sellable_kg"] + row["awaiting_kg"] < forecast:
-                alerts.append({"kind": "below_forecast", "level": "warning",
+                alerts.append({"product": name, "kind": "below_forecast", "level": "warning",
                                "text": f"{name}: {_kg(row['sellable_kg'] + row['awaiting_kg'])} "
                                        f"on hand, below the {_kg(forecast)} forecast"})
             if row["awaiting_kg"]:
-                alerts.append({"kind": "awaiting", "level": "info",
+                alerts.append({"product": name, "kind": "awaiting", "level": "info",
                                "text": f"{name}: {_kg(row['awaiting_kg'])} on the way, not yet confirmed as received"})
 
         rows = sorted(products.values(), key=lambda r: r["product_name"])

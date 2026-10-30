@@ -660,7 +660,7 @@ function Vendors({ vendors, logs, search, setSearch, refresh, openShop }) {
         </section>
       )}
 
-      <div className="filter-pills vendor-filters" role="group" aria-label="Show shops">
+      <div className="filter-pills card-filters" role="group" aria-label="Show shops">
         <button className={`filter-pill ${filter === "all" ? "active" : ""}`} aria-pressed={filter === "all"} onClick={() => setFilter("all")}>
           All <span>{cards.length}</span>
         </button>
@@ -675,15 +675,15 @@ function Vendors({ vendors, logs, search, setSearch, refresh, openShop }) {
         </div>
       )}
 
-      <div className="vendor-grid">
+      <div className="card-grid">
         {listed.map(({ vendor, stock, problems, incoming }) => {
           const id = idOf(vendor);
           const status = vendorStatus(vendor).toLowerCase();
           const level = risk[vendor.vendor_id];
           const log = lastLog(vendor);
           return (
-            <article className="vendor-card" key={id}>
-              <div className="vendor-card-head">
+            <article className="item-card" key={id}>
+              <div className="item-card-head">
                 <div>
                   <h3>{nameOf(vendor)}</h3>
                   <span>
@@ -701,13 +701,13 @@ function Vendors({ vendors, logs, search, setSearch, refresh, openShop }) {
                 )}
               </div>
 
-              <div className="vendor-stats">
+              <div className="item-stats">
                 <div><span>Sellable</span><strong>{kg(stock?.sellable_kg)}</strong></div>
                 <div><span>On the way</span><strong>{kg(incoming)}</strong></div>
                 <div><span>Alerts</span><strong className={problems ? "alert-count" : ""}>{problems}</strong></div>
               </div>
 
-              <p className="vendor-activity">
+              <p className="item-note">
                 {log ? `${logText(log)} · ${logTime(log)?.toLocaleString() || ""}` : "No recorded activity yet"}
               </p>
 
@@ -732,7 +732,7 @@ function Vendors({ vendors, logs, search, setSearch, refresh, openShop }) {
                 </div>
               )}
 
-              <div className="action-buttons vendor-actions">
+              <div className="action-buttons item-actions">
                 <button className="primary-btn small-btn" onClick={() => openShop(nameOf(vendor))}>
                   View stock
                 </button>
@@ -758,21 +758,49 @@ function Vendors({ vendors, logs, search, setSearch, refresh, openShop }) {
   );
 }
 
-const ALERT_CLASSES = { danger: "alert alert-error", warning: "alert alert-warning", info: "alert alert-info" };
+const STOCK_FILTERS = [
+  ["all", "All shops"],
+  ["attention", "Needs attention"],
+  ["expired", "Expired stock"],
+  ["expiring", "Expiring soon"],
+  ["low", "Low stock"],
+  ["below_forecast", "Below forecast"]
+];
 
 function Inventory({ search, setSearch, initialAttention = false, initialShop = "" }) {
   const { items: shops, loaded, message } = useList("/shop-stock", "shops");
-  const [attentionOnly, setAttentionOnly] = useState(initialAttention);
+  const [filter, setFilter] = useState(initialAttention ? "attention" : "all");
   // Opened from a Vendors card: show that one shop until the admin asks for all.
   const [onlyShop, setOnlyShop] = useState(initialShop);
 
+  const problems = (shop) => shop.alerts.filter((a) => a.level !== "info");
+  const hasKind = (shop, kind) =>
+    kind === "all" || (kind === "attention" ? problems(shop).length > 0 : shop.alerts.some((a) => a.kind === kind));
   const query = search.toLowerCase();
-  const listed = shops.filter((shop) => {
-    if (onlyShop && shop.shop_name !== onlyShop) return false;
-    if (attentionOnly && !shop.alerts.some((a) => a.level !== "info")) return false;
-    return [shop.shop_name, ...shop.products.map((p) => p.product_name)].join(" ").toLowerCase().includes(query);
-  });
-  const kg = (value) => `${Number(value || 0)} kg`;
+  const inScope = shops.filter(
+    (shop) =>
+      (!onlyShop || shop.shop_name === onlyShop) &&
+      [shop.shop_name, ...shop.products.map((p) => p.product_name)].join(" ").toLowerCase().includes(query)
+  );
+  const listed = inScope.filter((shop) => hasKind(shop, filter));
+  const kg = (value) => `${Number(Number(value || 0).toFixed(1))} kg`;
+  const total = (shop, key) => shop.products.reduce((sum, row) => sum + Number(row[key] || 0), 0);
+
+  // One short tag per alert, on the product it is about.
+  const tagsFor = (shop, row) =>
+    shop.alerts
+      .filter((a) => a.product === row.product_name)
+      .map((a) => ({
+        kind: a.kind,
+        level: a.level,
+        text: {
+          expired: `${kg(row.expired_kg)} expired`,
+          expiring: `expires in ${row.next_expiry_hours} h`,
+          low: "low stock",
+          below_forecast: `below ${kg(row.forecast_kg)} forecast`,
+          awaiting: `${kg(row.awaiting_kg)} on the way`
+        }[a.kind] || a.text
+      }));
 
   return (
     <PageLayout
@@ -788,86 +816,83 @@ function Inventory({ search, setSearch, initialAttention = false, initialShop = 
         </div>
       )}
 
-      <div className="inventory-toolbar">
-        {onlyShop && (
-          <button className="secondary-btn small-btn toggle-on" onClick={() => setOnlyShop("")}>
-            <X size={13} />
-            Showing {onlyShop} · show all shops
-          </button>
-        )}
-        <button className={`secondary-btn small-btn ${attentionOnly ? "toggle-on" : ""}`}
-          onClick={() => setAttentionOnly((v) => !v)}>
-          <AlertTriangle size={13} />
-          {attentionOnly ? "Showing shops that need attention" : "Needs attention only"}
-        </button>
+      <div className="card-filters">
+        <div className="filter-pills" role="group" aria-label="Show shops">
+          {onlyShop && (
+            <button className="filter-pill active" onClick={() => setOnlyShop("")}>
+              <X size={13} />
+              {onlyShop} · show all
+            </button>
+          )}
+          {STOCK_FILTERS.map(([id, label]) => (
+            <button key={id} className={`filter-pill ${filter === id ? "active" : ""}`} aria-pressed={filter === id}
+              onClick={() => setFilter(id)}>
+              {label} <span>{inScope.filter((shop) => hasKind(shop, id)).length}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {listed.length === 0 && !message && (
         <div className="table-card">
           <div className="empty-state">
-            {!loaded ? "Loading shop stock..." : attentionOnly ? "No shop needs attention right now." : "No shops found."}
+            {!loaded ? "Loading shop stock..." : filter !== "all" ? "No shop matches this filter right now." : "No shops found."}
           </div>
         </div>
       )}
 
-      {listed.map((shop) => (
-        <div className="table-card batch-group" key={shop.vendor_id}>
-          <div className="batch-group-title">
-            <h3>{shop.shop_name}</h3>
-            <span>
-              {[shop.locality && formatStatus(shop.locality), shop.has_fridge ? "Fridge" : "No fridge"]
-                .filter(Boolean).join(" · ")}
-              {" · "}holds {kg(shop.held_kg)}, {kg(shop.sellable_kg)} sellable
-            </span>
-          </div>
-
-          {shop.alerts.length > 0 && (
-            <div className="shop-alerts">
-              {shop.alerts.map((alert, index) => (
-                <div className={ALERT_CLASSES[alert.level]} key={index}>
-                  <AlertTriangle size={15} />
-                  {alert.text}
+      <div className="card-grid inventory-grid">
+        {listed.map((shop) => {
+          const count = problems(shop).length;
+          return (
+            <article className="item-card" key={shop.vendor_id}>
+              <div className="item-card-head">
+                <div>
+                  <h3>{shop.shop_name}</h3>
+                  <span>
+                    {[shop.locality && formatStatus(shop.locality), shop.has_fridge ? "Fridge" : "No fridge"]
+                      .filter(Boolean).join(" · ")}
+                  </span>
                 </div>
-              ))}
-            </div>
-          )}
+                <span className={count ? "risk-badge risk-high" : "risk-badge risk-low"}>
+                  {count ? `${count} alert${count === 1 ? "" : "s"}` : "All good"}
+                </span>
+              </div>
 
-          {shop.products.length === 0 ? (
-            <div className="empty-state">Holds no stock.</div>
-          ) : (
-            <div className="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Product</th>
-                    <th>Sellable</th>
-                    <th>Awaiting receipt</th>
-                    <th>Total held</th>
-                    <th>Expired</th>
-                    <th>Next expiry</th>
-                    <th>Forecast</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <div className="item-stats">
+                <div><span>Sellable</span><strong>{kg(shop.sellable_kg)}</strong></div>
+                <div><span>On the way</span><strong>{kg(total(shop, "awaiting_kg"))}</strong></div>
+                <div><span>Expired</span><strong className={total(shop, "expired_kg") ? "alert-count" : ""}>{kg(total(shop, "expired_kg"))}</strong></div>
+              </div>
+
+              {shop.products.length === 0 ? (
+                <p className="item-note">Holds no stock.</p>
+              ) : (
+                <ul className="stock-lines">
                   {shop.products.map((row) => (
-                    <tr key={row.product_name}>
-                      <td><strong>{row.product_name}</strong></td>
-                      <td>
-                        <span className={row.low_stock ? "status status-danger" : ""}>{kg(row.sellable_kg)}</span>
-                      </td>
-                      <td>{row.awaiting_kg ? kg(row.awaiting_kg) : "-"}</td>
-                      <td>{kg(row.held_kg)}</td>
-                      <td>{row.expired_kg ? <span className="status status-danger">{kg(row.expired_kg)}</span> : "-"}</td>
-                      <td>{row.next_expiry_hours === null ? "-" : `in ${row.next_expiry_hours} h`}</td>
-                      <td>{row.forecast_kg === null ? "-" : kg(Number(row.forecast_kg.toFixed(1)))}</td>
-                    </tr>
+                    <li key={row.product_name}>
+                      <div className="stock-line-head">
+                        <strong>{row.product_name}</strong>
+                        <span>
+                          {kg(row.sellable_kg)} sellable
+                          {row.forecast_kg !== null && ` · forecast ${kg(row.forecast_kg)}`}
+                        </span>
+                      </div>
+                      {tagsFor(shop, row).length > 0 && (
+                        <div className="stock-tags">
+                          {tagsFor(shop, row).map((tag) => (
+                            <span key={tag.kind} className={`stock-tag stock-tag-${tag.level}`}>{tag.text}</span>
+                          ))}
+                        </div>
+                      )}
+                    </li>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      ))}
+                </ul>
+              )}
+            </article>
+          );
+        })}
+      </div>
     </PageLayout>
   );
 }
@@ -1023,7 +1048,16 @@ const localNow = () => {
   return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 };
 
+const BATCH_BADGE_CLASS = {
+  Unassigned: "risk-badge risk-medium",
+  Hidden: "risk-badge risk-none",
+  "Awaiting receipt": "risk-badge risk-info",
+  "At shop": "risk-badge risk-low"
+};
+
 function Batches({ batches, products, vendors, search, setSearch, refresh }) {
+  const [productFilter, setProductFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   // Only what the manufacturer knows. Shelf life depends on the vendor's storage
   // and the low-stock alert defaults to 20% of volume, both set by the backend.
   const [form, setForm] = useState({ product_id: "", volume_kg: "", manufactured_at: localNow() });
@@ -1088,10 +1122,13 @@ function Batches({ batches, products, vendors, search, setSearch, refresh }) {
       )
     );
 
-  const groups = [...new Set(rows.map((b) => b.productName))].map((name) => {
-    const list = rows.filter((b) => b.productName === name);
-    return { name, list, remaining: list.reduce((sum, b) => sum + Number(b.remaining_kg), 0) };
-  });
+  const productNames = [...new Set(rows.map((b) => b.productName))].sort();
+  const statusNames = [...new Set(rows.map((b) => b.statusLabel))];
+  const listed = rows.filter(
+    (b) => (productFilter === "all" || b.productName === productFilter) &&
+      (statusFilter === "all" || b.statusLabel === statusFilter)
+  );
+  const count = (key, value) => rows.filter((b) => b[key] === value).length;
 
   return (
     <PageLayout
@@ -1119,7 +1156,7 @@ function Batches({ batches, products, vendors, search, setSearch, refresh }) {
               <option value="">Select product</option>
               {products.map((product) => (
                 <option key={product.product_id} value={product.product_id}>
-                  {product.product_name} ({product.product_id})
+                  {product.product_name}
                 </option>
               ))}
             </select>
@@ -1144,66 +1181,76 @@ function Batches({ batches, products, vendors, search, setSearch, refresh }) {
         </div>
       </div>
 
-      {groups.length === 0 && (
+      <div className="card-filters filter-rows">
+        <div className="filter-pills" role="group" aria-label="Product">
+          <button className={`filter-pill ${productFilter === "all" ? "active" : ""}`} aria-pressed={productFilter === "all"}
+            onClick={() => setProductFilter("all")}>
+            All products <span>{rows.length}</span>
+          </button>
+          {productNames.map((name) => (
+            <button key={name} className={`filter-pill ${productFilter === name ? "active" : ""}`}
+              aria-pressed={productFilter === name} onClick={() => setProductFilter(name)}>
+              {name} <span>{count("productName", name)}</span>
+            </button>
+          ))}
+        </div>
+        <div className="filter-pills" role="group" aria-label="Status">
+          <button className={`filter-pill ${statusFilter === "all" ? "active" : ""}`} aria-pressed={statusFilter === "all"}
+            onClick={() => setStatusFilter("all")}>
+            Any status
+          </button>
+          {statusNames.map((name) => (
+            <button key={name} className={`filter-pill ${statusFilter === name ? "active" : ""}`}
+              aria-pressed={statusFilter === name} onClick={() => setStatusFilter(name)}>
+              {name} <span>{count("statusLabel", name)}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {listed.length === 0 && (
         <div className="table-card">
-          <div className="empty-state">No active batches.</div>
+          <div className="empty-state">No active batches{rows.length ? " for this filter" : ""}.</div>
         </div>
       )}
 
-      {groups.map((group) => (
-        <div className="table-card batch-group" key={group.name}>
-          <div className="batch-group-title">
-            <h3>{group.name}</h3>
-            <span>
-              {group.list.length} active batch{group.list.length === 1 ? "" : "es"}, {Number(group.remaining.toFixed(1))} kg left
-            </span>
-          </div>
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Vendor</th>
-                  <th>Remaining / Assigned</th>
-                  <th>Manufactured</th>
-                  <th>Status</th>
-                  <th>Visibility</th>
-                </tr>
-              </thead>
-              <tbody>
-                {group.list.map((batch) => {
-                  const low = batch.vendor_id && batch.remaining_kg <= batch.threshold_kg;
-                  return (
-                    <tr key={batch._id}>
-                      <td><strong>{batch.shop || "Not assigned"}</strong></td>
-                      <td>
-                        <span className={low ? "status status-danger" : ""}>
-                          {batch.remaining_kg} / {batch.volume_kg} kg
-                        </span>
-                      </td>
-                      <td>{formatDate(getValue(batch, ["manufactured_at", "mfgTimestamp", "created_at"], ""))}</td>
-                      <td>
-                        <span className={statusClass(batch.status === "available" ? "pending" : "active")}>
-                          {batch.statusLabel}
-                        </span>
-                      </td>
-                      <td>
-                        {batch.status === "available" ? (
-                          <button className="secondary-btn small-btn" onClick={() => toggleExposed(batch)}>
-                            {batch.exposed === false ? <EyeOff size={13} /> : <Eye size={13} />}
-                            {batch.exposed === false ? "Hidden" : "Exposed"}
-                          </button>
-                        ) : (
-                          "-"
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ))}
+      <div className="card-grid">
+        {listed.map((batch) => {
+          const low = batch.vendor_id && batch.remaining_kg <= batch.threshold_kg;
+          const share = Math.max(0, Math.min(100, (Number(batch.remaining_kg) / Number(batch.volume_kg || 1)) * 100));
+          return (
+            <article className="item-card" key={batch._id}>
+              <div className="item-card-head">
+                <div>
+                  <h3>{batch.productName}</h3>
+                  <span>made {formatDate(getValue(batch, ["manufactured_at", "mfgTimestamp", "created_at"], ""))}</span>
+                </div>
+                <span className={BATCH_BADGE_CLASS[batch.statusLabel] || "risk-badge risk-none"}>{batch.statusLabel}</span>
+              </div>
+              <div className="batch-shop">
+                {batch.shop ? <>At <strong>{batch.shop}</strong></> : "Not assigned to a shop yet"}
+              </div>
+              <div className="kg-meter">
+                <div className="kg-meter-head">
+                  <span>Remaining</span>
+                  <strong className={low ? "alert-count" : ""}>{batch.remaining_kg} / {batch.volume_kg} kg</strong>
+                </div>
+                <div className="kg-meter-track">
+                  <div className="kg-meter-fill" style={{ width: `${share}%`, background: low ? "var(--danger)" : "var(--primary)" }} />
+                </div>
+              </div>
+              {batch.status === "available" && (
+                <div className="action-buttons item-actions">
+                  <button className="secondary-btn small-btn" onClick={() => toggleExposed(batch)}>
+                    {batch.exposed === false ? <EyeOff size={13} /> : <Eye size={13} />}
+                    {batch.exposed === false ? "Hidden from vendors · show" : "Visible to vendors · hide"}
+                  </button>
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
     </PageLayout>
   );
 }
@@ -1942,49 +1989,43 @@ function Products({ products, search, setSearch, refresh }) {
         </div>
       </div>
 
-      <div className="table-card">
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Category</th>
-                <th>Price</th>
-                <th>Fridge shelf life</th>
-                <th>Room shelf life</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((product, index) => {
-                const unit = getValue(product, ["unit_type", "unit"], "kg");
-                const price = getValue(product, ["price"], "");
-                return (
-                  <tr key={product._id || index}>
-                    <td><strong>{product.product_name}</strong></td>
-                    <td>{product.category ? formatStatus(product.category) : "-"}</td>
-                    <td>{price === "" ? "-" : `₹${price} / ${unit}`}</td>
-                    <td>{getValue(product, ["shelf_life_fridge_hrs", "shelf_life_hours"], "-")} h</td>
-                    <td>{getValue(product, ["shelf_life_ambient_hrs"], "-")} h</td>
-                    <td>
-                      <div className="action-buttons">
-                        <button className="secondary-btn small-btn" disabled={busy} onClick={() => startEdit(product)}>
-                          <Pencil size={13} />
-                          Edit
-                        </button>
-                        <button className="secondary-btn small-btn danger-btn" disabled={busy} onClick={() => remove(product)}>
-                          <Trash2 size={13} />
-                          Remove
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {filtered.length === 0 && <div className="empty-state">No products found.</div>}
+      {filtered.length === 0 && (
+        <div className="table-card">
+          <div className="empty-state">No products found.</div>
         </div>
+      )}
+
+      <div className="card-grid">
+        {filtered.map((product, index) => {
+          const unit = getValue(product, ["unit_type", "unit"], "kg");
+          const price = getValue(product, ["price"], "");
+          return (
+            <article className={`item-card ${editing === product.product_id ? "item-card-active" : ""}`} key={product._id || index}>
+              <div className="item-card-head">
+                <div>
+                  <h3>{product.product_name}</h3>
+                  <span>{product.category ? formatStatus(product.category) : "No category"}</span>
+                </div>
+                {editing === product.product_id && <span className="risk-badge risk-medium">Editing</span>}
+              </div>
+              <div className="item-stats">
+                <div><span>Price</span><strong>{price === "" ? "-" : `₹${price}`}</strong><em>per {unit}</em></div>
+                <div><span>Fridge</span><strong>{getValue(product, ["shelf_life_fridge_hrs", "shelf_life_hours"], "-")} h</strong><em>shelf life</em></div>
+                <div><span>Room</span><strong>{getValue(product, ["shelf_life_ambient_hrs"], "-")} h</strong><em>shelf life</em></div>
+              </div>
+              <div className="action-buttons item-actions">
+                <button className="primary-btn small-btn" disabled={busy} onClick={() => startEdit(product)}>
+                  <Pencil size={13} />
+                  Edit
+                </button>
+                <button className="secondary-btn small-btn danger-btn" disabled={busy} onClick={() => remove(product)}>
+                  <Trash2 size={13} />
+                  Remove
+                </button>
+              </div>
+            </article>
+          );
+        })}
       </div>
     </PageLayout>
   );
