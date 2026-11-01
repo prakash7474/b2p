@@ -1,5 +1,5 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { useState, type ReactNode } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -20,6 +20,9 @@ import { colors, fonts, radius } from "@/src/theme";
 
 type ButtonTone = "primary" | "secondary" | "danger";
 
+/** True inside the green page header, where buttons are drawn in white. */
+export const OnDark = createContext(false);
+
 export function Button({
   label,
   onPress,
@@ -39,9 +42,16 @@ export function Button({
   full?: boolean;
   compact?: boolean;
 }) {
+  const onDark = useContext(OnDark);
   const isDisabled = disabled || loading;
-  const labelColor =
-    tone === "primary" ? "#fff" : tone === "danger" ? colors.danger : colors.text;
+  // Every button is outlined: the border and label share one color.
+  const labelColor = onDark
+    ? "#fff"
+    : tone === "primary"
+      ? colors.primary
+      : tone === "danger"
+        ? colors.danger
+        : colors.text;
 
   return (
     <TouchableOpacity
@@ -51,19 +61,15 @@ export function Button({
       disabled={isDisabled}
       style={[
         styles.button,
-        tone === "primary" && styles.buttonPrimary,
-        tone === "secondary" && styles.buttonSecondary,
-        tone === "danger" && styles.buttonDanger,
+        { borderColor: labelColor },
+        tone === "primary" && !onDark && styles.buttonPrimary,
         compact && styles.buttonCompact,
         full && styles.buttonFull,
         isDisabled && styles.buttonDisabled,
       ]}
     >
-      {loading ? (
-        <ActivityIndicator size="small" color={labelColor} />
-      ) : (
-        icon
-      )}
+      {/* Icons are tinted for white backgrounds, so header buttons show text only. */}
+      {loading ? <ActivityIndicator size="small" color={labelColor} /> : onDark ? null : icon}
       <Text style={[styles.buttonLabel, { color: labelColor }]}>
         {loading ? `${label}...` : label}
       </Text>
@@ -148,7 +154,7 @@ export function PasswordField({
       >
         <MaterialCommunityIcons
           name={visible ? "eye-off-outline" : "eye-outline"}
-          size={16}
+          size={20}
           color={colors.muted}
         />
       </TouchableOpacity>
@@ -255,62 +261,55 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    borderRadius: radius.control,
-    paddingHorizontal: 14,
+    gap: 8,
+    minHeight: 48,
+    borderRadius: radius.pill,
+    borderWidth: 2,
+    paddingHorizontal: 20,
     paddingVertical: 10,
   },
   buttonPrimary: {
-    backgroundColor: colors.primary,
-  },
-  buttonSecondary: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  buttonDanger: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: "#f0d1d1",
+    backgroundColor: colors.butter,
   },
   buttonCompact: {
-    paddingHorizontal: 10,
-    paddingVertical: 7,
+    minHeight: 40,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
   },
   buttonFull: {
     width: "100%",
   },
   buttonDisabled: {
-    opacity: 0.6,
+    opacity: 0.5,
   },
   buttonLabel: {
-    fontSize: 11,
-    fontWeight: "600",
-    fontFamily: fonts.semibold,
+    fontSize: 15,
+    fontFamily: fonts.medium,
   },
   field: {
     gap: 6,
     marginBottom: 14,
   },
   fieldLabel: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: colors.muted,
-    fontFamily: fonts.semibold,
+    fontSize: 12,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+    color: colors.primary,
+    fontFamily: fonts.medium,
   },
   fieldHint: {
-    fontSize: 9,
+    fontSize: 12,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
   input: {
-    borderWidth: 1,
-    borderColor: colors.border,
+    borderWidth: 2,
+    borderColor: colors.line,
     borderRadius: radius.control,
     backgroundColor: colors.surface,
-    paddingHorizontal: 11,
-    paddingVertical: 10,
-    fontSize: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    fontSize: 15,
     color: colors.text,
     fontFamily: fonts.regular,
   },
@@ -321,28 +320,28 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   passwordInput: {
-    paddingRight: 38,
+    paddingRight: 48,
   },
   passwordToggle: {
     position: "absolute",
-    right: 8,
+    right: 14,
     top: "50%",
     transform: [{ translateY: -12 }],
   },
   selectControl: {
-    borderWidth: 1,
-    borderColor: colors.border,
+    borderWidth: 2,
+    borderColor: colors.line,
     borderRadius: radius.control,
     backgroundColor: colors.surface,
-    paddingHorizontal: 11,
-    paddingVertical: 11,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
   },
   selectText: {
-    fontSize: 12,
+    fontSize: 15,
     color: colors.text,
     fontFamily: fonts.regular,
     flexShrink: 1,
@@ -359,17 +358,17 @@ const styles = StyleSheet.create({
   modalSheet: {
     backgroundColor: colors.surface,
     borderRadius: radius.card,
-    borderWidth: 1,
+    borderWidth: 2,
     borderColor: colors.border,
     paddingVertical: 12,
     paddingHorizontal: 6,
     maxHeight: 360,
   },
   modalTitle: {
-    fontSize: 11,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-    color: colors.text,
+    fontSize: 16,
+    fontFamily: fonts.black,
+    textTransform: "uppercase",
+    color: colors.primary,
     paddingHorizontal: 10,
     paddingBottom: 8,
   },
@@ -382,14 +381,14 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
     paddingHorizontal: 10,
-    paddingVertical: 11,
+    paddingVertical: 13,
     borderRadius: radius.control,
   },
   modalOptionActive: {
     backgroundColor: colors.primaryLight,
   },
   modalOptionText: {
-    fontSize: 12,
+    fontSize: 15,
     color: colors.text,
     fontFamily: fonts.regular,
     flexShrink: 1,

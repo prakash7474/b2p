@@ -5,9 +5,17 @@ import { StyleSheet, Text, View } from "react-native";
 
 import { Card, EmptyState, SectionTitle, StatCard, StatGrid } from "@/src/components/cards";
 import { LoadingScreen, Screen } from "@/src/components/layout";
-import { Button, SecondaryButton } from "@/src/components/controls";
-import { AlertBox, BarMeter, StatusPill } from "@/src/components/status";
-import { api, type ActivityLog, type RiskReport } from "@/src/lib/api";
+import { Button, FieldInput, SecondaryButton } from "@/src/components/controls";
+import { AlertBox, BarMeter, RiskBadge } from "@/src/components/status";
+import {
+  api,
+  madeLabel,
+  parseServerDate,
+  type ActivityLog,
+  type PickupOrder,
+  type RiskReport,
+  type ShopAlert,
+} from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
 import { colors, fonts, radius, riskColor } from "@/src/theme";
 
@@ -18,6 +26,12 @@ export default function DashboardScreen() {
 
   const [report, setReport] = useState<RiskReport | null>(null);
   const [logs, setLogs] = useState<ActivityLog[] | null>(null);
+  const [restockKg, setRestockKg] = useState<number | null>(null);
+  const [alerts, setAlerts] = useState<ShopAlert[]>([]);
+  const [pickups, setPickups] = useState<PickupOrder[]>([]);
+  const [codes, setCodes] = useState<Record<string, string>>({});
+  // Cancelling a pickup takes two taps: the first arms it, the second cancels.
+  const [cancelling, setCancelling] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -31,6 +45,12 @@ export default function DashboardScreen() {
       const [riskData, logData] = await Promise.all([api.getRisk(vendorId), api.getLogs()]);
       setReport(riskData);
       setLogs(logData);
+      // Alerts and the restock figure are extras: a failure there must not hide the rest.
+      api.getAlerts(vendorId).then(setAlerts).catch(() => setAlerts([]));
+      api.getPickups(vendorId).then(setPickups).catch(() => setPickups([]));
+      api.getForecast(vendorId)
+        .then((result) => setRestockKg(Number(result.summary?.refill_quantity ?? 0)))
+        .catch(() => setRestockKg(null));
     } catch (caught) {
       setNotice({ type: "error", text: messageOf(caught) });
     } finally {
@@ -49,6 +69,41 @@ export default function DashboardScreen() {
       setNotice(null);
       const result = await api.receiveBatch(vendorId, batchId);
       setNotice({ type: "success", text: result.message ?? "Assignment confirmed." });
+      await load();
+    } catch (caught) {
+      setNotice({ type: "error", text: messageOf(caught) });
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  // The customer shows their 4-digit code; handing over records the sale.
+  const handOver = async (order: PickupOrder) => {
+    try {
+      setBusyId(order.order_id);
+      setNotice(null);
+      await api.collectPickup(vendorId, order.order_id, codes[order.order_id] ?? "");
+      setNotice({ type: "success", text: `Handed over ${order.customer_name ?? "the customer"}'s order.` });
+      setCodes((prev) => ({ ...prev, [order.order_id]: "" }));
+      await load();
+    } catch (caught) {
+      setNotice({ type: "error", text: messageOf(caught) });
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const cancelPickup = async (order: PickupOrder) => {
+    if (cancelling !== order.order_id) {
+      setCancelling(order.order_id);
+      return;
+    }
+    try {
+      setBusyId(order.order_id);
+      setNotice(null);
+      await api.cancelPickup(vendorId, order.order_id, "cancelled by the shop");
+      setNotice({ type: "success", text: `Cancelled ${order.customer_name ?? "the customer"}'s order; the batter is free to sell.` });
+      setCancelling("");
       await load();
     } catch (caught) {
       setNotice({ type: "error", text: messageOf(caught) });
@@ -84,8 +139,8 @@ export default function DashboardScreen() {
 
   return (
     <Screen
-      title="Dashboard"
-      subtitle={String(vendor?.shop_name ?? "Your shop at a glance")}
+      title={String(vendor?.shop_name ?? "Dashboard")}
+      subtitle="Your shop at a glance: deliveries to confirm, stock and risk"
       action={
         <SecondaryButton
           label="Refresh"
@@ -100,12 +155,86 @@ export default function DashboardScreen() {
     >
       {notice ? <AlertBox type={notice.type} message={notice.text} /> : null}
 
+      {alerts.length > 0 ? (
+        <View>
+          <SectionTitle title="Needs attention" subtitle="Your stock right now, most urgent first" />
+          <Card style={styles.alertCard}>
+            {alerts.map((alert, index) => (
+              <View key={`${alert.kind}-${index}`} style={[styles.alertRow, index === alerts.length - 1 && styles.rowLast]}>
+                <MaterialCommunityIcons
+                  name={alert.level === "info" ? "truck-delivery-outline" : "alert-circle-outline"}
+                  size={20}
+                  color={ALERT_COLORS[alert.level]}
+                />
+                <Text style={[styles.alertText, alert.level !== "info" && { color: ALERT_COLORS[alert.level] }]}>
+                  {alert.text}
+                </Text>
+              </View>
+            ))}
+            <View style={styles.alertActions}>
+              <Button label="View batches" compact onPress={() => router.push("/(vendor)/inventory")} />
+              <SecondaryButton label="Request batches" compact onPress={() => router.push("/(vendor)/request-batches")} />
+            </View>
+          </Card>
+        </View>
+      ) : null}
+
+      {pickups.length > 0 ? (
+        <View>
+          <SectionTitle title="Customer pickups" subtitle="Ask for the 4-digit code, take payment, then hand over" />
+          <Card>
+            {pickups.map((order, index) => (
+              <View key={order.order_id} style={[styles.pickupRow, index === pickups.length - 1 && styles.rowLast]}>
+                <View style={styles.rowMain}>
+                  <Text style={styles.rowTitle}>{order.customer_name ?? "A customer"}</Text>
+                  <Text style={styles.rowMeta}>
+                    {order.items.map((item) => `${item.product_name} ${item.quantity_kg} kg`).join(" · ")}
+                    {order.total ? ` · ₹${order.total}` : ""}
+                  </Text>
+                  <Text style={styles.rowMeta}>
+                    Held until{" "}
+                    {parseServerDate(order.hold_until).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+                  </Text>
+                </View>
+                <View style={styles.pickupActions}>
+                  <View style={styles.codeInput}>
+                    <FieldInput
+                      value={codes[order.order_id] ?? ""}
+                      onChangeText={(text) => setCodes((prev) => ({ ...prev, [order.order_id]: text }))}
+                      placeholder="Code"
+                      keyboardType="number-pad"
+                      maxLength={4}
+                      accessibilityLabel={`Pickup code for ${order.customer_name ?? "the customer"}`}
+                    />
+                  </View>
+                  <Button
+                    label="Hand over"
+                    compact
+                    disabled={(codes[order.order_id] ?? "").length !== 4}
+                    loading={busyId === order.order_id}
+                    onPress={() => void handOver(order)}
+                  />
+                </View>
+                <Button
+                  label={cancelling === order.order_id ? "Tap again to cancel" : "Cancel order"}
+                  tone="danger"
+                  compact
+                  disabled={busyId === order.order_id}
+                  onPress={() => void cancelPickup(order)}
+                />
+              </View>
+            ))}
+          </Card>
+        </View>
+      ) : null}
+
       <StatGrid>
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="scale" size={18} color={color} />}
           label="Current Stock"
           value={currentStock.toFixed(1)}
           sub={`kg in ${inStore.length} batches`}
+          action={{ label: "View batches", onPress: () => router.push("/(vendor)/inventory") }}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="shield-alert-outline" size={18} color={color} />}
@@ -113,13 +242,15 @@ export default function DashboardScreen() {
           value={aggregate == null ? "—" : `${aggregate.toFixed(1)}%`}
           sub={aggregateLabel ?? "no batches"}
           tone={aggregateLabel === "High" ? "danger" : aggregateLabel === "Medium" ? "warning" : "success"}
+          action={{ label: "Spoilage risk", onPress: () => router.push("/(vendor)/risk") }}
         />
         <StatCard
-          icon={(color) => <MaterialCommunityIcons name="truck-check-outline" size={18} color={color} />}
-          label="To Confirm"
-          value={toConfirm.length}
-          sub="assigned batches"
-          tone={toConfirm.length > 0 ? "warning" : "success"}
+          icon={(color) => <MaterialCommunityIcons name="truck-delivery-outline" size={18} color={color} />}
+          label="Restock Needed"
+          value={restockKg == null ? "—" : restockKg.toFixed(1)}
+          sub={restockKg == null ? "forecast unavailable" : restockKg > 0 ? "kg for this window" : "kg, stock covers demand"}
+          tone={restockKg ? "danger" : "success"}
+          action={{ label: "Demand forecast", onPress: () => router.push("/(vendor)/forecast") }}
         />
         <StatCard
           icon={(color) => <MaterialCommunityIcons name="alert-decagram-outline" size={18} color={color} />}
@@ -127,6 +258,7 @@ export default function DashboardScreen() {
           value={lowStock}
           sub={lowStock > 0 ? "below threshold" : "all healthy"}
           tone={lowStock > 0 ? "danger" : "success"}
+          action={{ label: "View batches", onPress: () => router.push("/(vendor)/inventory") }}
         />
       </StatGrid>
 
@@ -156,14 +288,14 @@ export default function DashboardScreen() {
                   <View style={styles.rowMain}>
                     <Text style={styles.rowTitle}>{String(batch.product_name ?? "Batch")}</Text>
                     <Text style={styles.rowMeta}>
-                      Batch {id} · {Number(batch.remaining_kg ?? 0)} kg
+                      {[`${Number(batch.remaining_kg ?? 0)} kg`, madeLabel(batch.manufactured_at)].filter(Boolean).join(" · ")}
                     </Text>
                   </View>
                   <Button
                     label="Confirm"
                     compact
                     loading={busyId === id}
-                    icon={<MaterialCommunityIcons name="check-circle-outline" size={13} color="#fff" />}
+                    icon={<MaterialCommunityIcons name="check-circle-outline" size={18} color={colors.primary} />}
                     onPress={() => void confirm(id)}
                   />
                 </View>
@@ -185,9 +317,12 @@ export default function DashboardScreen() {
                 <Text style={styles.rowTitle}>Overall shop risk</Text>
                 <BarMeter percent={aggregate} color={riskColor(aggregateLabel)} />
               </View>
-              <Text style={[styles.aggregateValue, { color: riskColor(aggregateLabel) }]}>
-                {aggregate.toFixed(1)}% {aggregateLabel}
-              </Text>
+              <View style={styles.aggregateSide}>
+                <Text style={[styles.aggregateValue, { color: riskColor(aggregateLabel) }]}>
+                  {aggregate.toFixed(1)}%
+                </Text>
+                {aggregateLabel ? <RiskBadge label={aggregateLabel} /> : null}
+              </View>
             </View>
           ) : null}
 
@@ -210,10 +345,10 @@ export default function DashboardScreen() {
                     <View style={styles.rowMain}>
                       <Text style={styles.rowTitle}>{String(batch.product_name ?? "Batch")}</Text>
                       <Text style={styles.rowMeta}>
-                        Batch {String(batch.batch_id)} · {Number(batch.remaining_kg ?? 0)} kg
+                        {[`${Number(batch.remaining_kg ?? 0)} kg`, madeLabel(batch.manufactured_at)].filter(Boolean).join(" · ")}
                       </Text>
                     </View>
-                    <StatusPill status={label === "Low" ? "active" : label.toLowerCase()} label={`${label} Risk`} />
+                    <RiskBadge label={batch.expired ? "Expired" : label} />
                   </View>
                   <BarMeter
                     label="Risk score"
@@ -261,7 +396,49 @@ export default function DashboardScreen() {
   );
 }
 
+const ALERT_COLORS = { danger: colors.danger, warning: colors.warning, info: colors.primary };
+
 const styles = StyleSheet.create({
+  pickupRow: {
+    padding: 16,
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+  },
+  pickupActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  codeInput: {
+    flex: 1,
+  },
+  alertCard: {
+    borderColor: colors.danger,
+  },
+  alertRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+  },
+  alertText: {
+    flex: 1,
+    fontSize: 15,
+    lineHeight: 21,
+    color: colors.text,
+    fontFamily: fonts.medium,
+  },
+  alertActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    padding: 16,
+    paddingTop: 4,
+  },
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -269,7 +446,7 @@ const styles = StyleSheet.create({
     gap: 12,
     padding: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   rowLast: {
     borderBottomWidth: 0,
@@ -279,29 +456,32 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   rowTitle: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: "700",
     fontFamily: fonts.bold,
     color: colors.text,
   },
   rowMeta: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
   aggregateRow: {
     backgroundColor: colors.tableHeader,
   },
+  aggregateSide: {
+    alignItems: "flex-end",
+    gap: 6,
+  },
   aggregateValue: {
-    fontSize: 14,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
+    fontSize: 26,
+    fontFamily: fonts.black,
   },
   riskRow: {
     padding: 14,
     gap: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   riskHeader: {
     flexDirection: "row",
@@ -317,7 +497,7 @@ const styles = StyleSheet.create({
     gap: 11,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.line,
   },
   activityIcon: {
     width: 28,
@@ -328,7 +508,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   activityText: {
-    fontSize: 11,
+    fontSize: 13,
     lineHeight: 16,
     color: colors.text,
     fontFamily: fonts.regular,

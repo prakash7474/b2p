@@ -1,14 +1,14 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 import { Card, EmptyState, SectionTitle } from "@/src/components/cards";
-import { Button, FieldInput, SecondaryButton } from "@/src/components/controls";
+import { Button, SecondaryButton } from "@/src/components/controls";
 import { Screen } from "@/src/components/layout";
 import { AlertBox } from "@/src/components/status";
-import { api } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
+import { freshest, fromPrice, kg, madeWhen, rupees, shopId } from "@/src/lib/shop-format";
 import {
   useLiveLocation,
   useLiveTracking,
@@ -16,15 +16,16 @@ import {
 } from "@/src/lib/use-live-location";
 import { colors, fonts } from "@/src/theme";
 
-/** Customer home: shops near the customer that have stock, and a quick buy. */
+const CHIPS = ["All", "Idli Batter", "Dosa Batter", "Combo Pack"];
+
+/** Customer home: shops near the customer with fresh batter in stock. */
 export default function CustomerHomeScreen() {
-  const { customer, nearbyVendors, customerLocation, loadNearby, signOut } = useAuth();
+  const { customer, nearbyVendors, customerLocation, loadNearby } = useAuth();
   const { error: locationError, capturing, capture } = useLiveLocation();
 
   const [refreshing, setRefreshing] = useState(false);
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
-  const [qty, setQty] = useState<Record<string, string>>({});
-  const [busyKey, setBusyKey] = useState("");
+  const [product, setProduct] = useState("All");
 
   /** Where the list was last loaded from, so we only reload once the customer moves on. */
   const lastLoadedRef = useRef<{ latitude: number; longitude: number } | null>(null);
@@ -75,131 +76,91 @@ export default function CustomerHomeScreen() {
     }
   };
 
-  const buy = async (vendorKey: string, productName: string) => {
-    const key = `${vendorKey}:${productName}`;
-    const kg = Number(qty[key]);
-    if (!Number.isFinite(kg) || kg <= 0) {
-      setNotice({ type: "error", text: "Enter how many kg you want (greater than 0)." });
-      return;
-    }
-    try {
-      setBusyKey(key);
-      setNotice(null);
-      await api.buy(vendorKey, productName, kg);
-      setNotice({ type: "success", text: `Ordered ${kg} kg of ${productName}.` });
-      setQty((prev) => ({ ...prev, [key]: "" }));
-      await refresh();
-    } catch (caught) {
-      setNotice({ type: "error", text: messageOf(caught) });
-    } finally {
-      setBusyKey("");
-    }
-  };
+  const shops = nearbyVendors.filter(
+    (shop) => product === "All" || (shop.available_inventory ?? []).some((item) => item.product_name === product),
+  );
 
   return (
     <Screen
-      portal="CUSTOMER PORTAL"
-      title={`Hi ${String(customer?.name ?? "there")}`}
-      subtitle="Shops within 5 km that have batter in stock"
+      portal="B2P CUSTOMER"
+      title="Eat fresh"
+      subtitle={`Hi ${String(customer?.name ?? "there")}, ${customerLocation?.address || "shops within 5 km of you"}`}
       action={
-        <SecondaryButton
-          label="Refresh"
-          compact
-          icon={<MaterialCommunityIcons name="refresh" size={13} color={colors.text} />}
-          onPress={() => void refresh()}
-          loading={refreshing || capturing}
-        />
+        <SecondaryButton label="Refresh" compact onPress={() => void refresh()} loading={refreshing || capturing} />
       }
       refreshing={refreshing}
       onRefresh={() => void refresh()}
-      keyboardShouldPersistTaps="handled"
     >
       {notice ? <AlertBox type={notice.type} message={notice.text} /> : null}
-      {locationError || trackingError ? (
-        <AlertBox type="error" message={locationError || trackingError} />
-      ) : null}
+      {locationError || trackingError ? <AlertBox type="error" message={locationError || trackingError} /> : null}
 
-      <SectionTitle title="Nearby Shops" subtitle={customerLocation?.address || undefined} />
+      <View style={styles.chips}>
+        {CHIPS.map((chip) => (
+          <TouchableOpacity
+            key={chip}
+            accessibilityRole="button"
+            accessibilityState={{ selected: product === chip }}
+            style={[styles.chip, product === chip && styles.chipActive]}
+            onPress={() => setProduct(chip)}
+          >
+            <Text style={styles.chipText}>{chip.replace(" Batter", "").replace(" Pack", "")}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
 
-      {/* Live GPS quality of the fix the list is based on. */}
-      {liveFix ? (
-        <View style={styles.liveRow}>
-          <MaterialCommunityIcons name="crosshairs-gps" size={12} color={colors.primary} />
-          <Text style={styles.liveMeta}>
-            {`Accuracy ± ${liveFix.accuracy !== null ? `${Math.round(liveFix.accuracy)} m` : "unknown"}`}
-            {"  ·  "}
-            {`updated ${new Date(liveFix.capturedAt).toLocaleTimeString()}`}
-          </Text>
-        </View>
-      ) : null}
-
-      {nearbyVendors.length === 0 ? (
-        <Card>
-          <EmptyState
-            icon={<MaterialCommunityIcons name="store-search-outline" size={26} color={colors.muted} />}
-            title={customerLocation ? "No shops with stock nearby" : "Share your location"}
-            text={
-              customerLocation
-                ? "Try again later; shops restock through the day."
-                : "Tap Refresh to use your location and find shops near you."
-            }
-          />
-        </Card>
-      ) : (
-        nearbyVendors.map((vendor) => {
-          const vendorKey = String(vendor.vendor_id ?? vendor._id ?? "");
-          const items = (vendor.available_inventory ?? []) as { product_name?: string; quantity?: number }[];
-          return (
-            <Card key={vendorKey} style={styles.card}>
-              <View style={styles.header}>
-                <Text style={styles.title}>{String(vendor.shop_name ?? vendorKey)}</Text>
-                <Text style={styles.meta}>{Number(vendor.distance_km ?? 0).toFixed(1)} km</Text>
-              </View>
-              {vendor.location?.address ? <Text style={styles.meta}>{vendor.location.address}</Text> : null}
-
-              {items.map((item) => {
-                const product = String(item.product_name ?? "Batter");
-                const key = `${vendorKey}:${product}`;
-                return (
-                  <View key={key} style={styles.itemRow}>
-                    <View style={styles.itemText}>
-                      <Text style={styles.itemName}>{product}</Text>
-                      <Text style={styles.meta}>{Number(item.quantity ?? 0)} kg in stock</Text>
-                    </View>
-                    <View style={styles.qty}>
-                      <FieldInput
-                        value={qty[key] ?? ""}
-                        onChangeText={(text) => setQty((prev) => ({ ...prev, [key]: text }))}
-                        placeholder="kg"
-                        keyboardType="decimal-pad"
-                        accessibilityLabel={`Kilograms of ${product} to buy`}
-                      />
-                    </View>
-                    <Button
-                      label="Buy"
-                      compact
-                      loading={busyKey === key}
-                      icon={<MaterialCommunityIcons name="cart-plus" size={13} color="#fff" />}
-                      onPress={() => void buy(vendorKey, product)}
-                    />
+      <View>
+        <SectionTitle title="Open near you" subtitle={liveFix ? "Following your location" : "Within 5 km"} />
+        {shops.length === 0 ? (
+          <Card>
+            <EmptyState
+              icon={<MaterialCommunityIcons name="store-search-outline" size={26} color={colors.muted} />}
+              title={customerLocation ? "No fresh batter nearby" : "Share your location"}
+              text={
+                customerLocation
+                  ? "Shops restock through the day; pull down to check again."
+                  : "Tap Refresh to use your location and find shops near you."
+              }
+            />
+          </Card>
+        ) : (
+          <View style={styles.list}>
+            {shops.map((shop) => {
+              const fresh = freshest(shop, product === "All" ? undefined : product);
+              const made = fresh?.made_at ? madeWhen(fresh.made_at) : "";
+              const today = made.startsWith("today");
+              const price = fromPrice(shop);
+              const stock = (shop.available_inventory ?? [])
+                .map((item) => `${String(item.product_name ?? "").replace(" Batter", "")} ${kg(item.quantity)}`)
+                .join(" · ");
+              return (
+                <Card key={shopId(shop)} style={styles.shopCard}>
+                  <View style={[styles.stamp, { borderColor: today ? colors.primary : colors.warning }]}>
+                    <Text style={[styles.stampSmall, { color: today ? colors.primary : colors.warning }]}>MADE</Text>
+                    <Text style={[styles.stampBig, { color: today ? colors.primary : colors.warning }]}>
+                      {/* Today: the time; older batter says how old, so it never looks fresher than it is. */}
+                      {!made ? "—" : today ? made.split(", ")[1].replace(/:00| /g, "") : made.startsWith("yesterday") ? "YDAY" : made.split(", ")[0]}
+                    </Text>
                   </View>
-                );
-              })}
-            </Card>
-          );
-        })
-      )}
-
-      <Button
-        label="Sign out"
-        tone="secondary"
-        icon={<MaterialCommunityIcons name="logout" size={14} color={colors.text} />}
-        onPress={() => {
-          signOut();
-          router.replace("/(auth)/customer-login");
-        }}
-        full
-      />
+                  <View style={styles.shopText}>
+                    <Text style={styles.shopName}>{String(shop.shop_name ?? "Shop")}</Text>
+                    <Text style={styles.meta}>
+                      {[`${Number(shop.distance_km ?? 0).toFixed(1)} km`, price !== null && `from ${rupees(price)}/kg`]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </Text>
+                    <Text style={styles.stock} numberOfLines={2}>{stock}</Text>
+                  </View>
+                  <Button
+                    label="Order"
+                    compact
+                    onPress={() => router.push({ pathname: "/(customer)/shop", params: { vendorId: shopId(shop) } })}
+                  />
+                </Card>
+              );
+            })}
+          </View>
+        )}
+      </View>
     </Screen>
   );
 }
@@ -222,60 +183,71 @@ function metresBetween(
 }
 
 const styles = StyleSheet.create({
-  liveRow: {
+  chips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  chip: {
+    minHeight: 40,
+    paddingHorizontal: 16,
+    justifyContent: "center",
+    borderRadius: 100,
+    borderWidth: 2,
+    borderColor: colors.primary,
+    backgroundColor: colors.surface,
+  },
+  chipActive: {
+    backgroundColor: colors.butter,
+  },
+  chipText: {
+    fontSize: 14,
+    fontFamily: fonts.semibold,
+    color: colors.primary,
+  },
+  list: {
+    gap: 12,
+  },
+  shopCard: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    marginTop: -2,
-    marginBottom: 10,
+    gap: 12,
+    padding: 14,
   },
-  liveMeta: {
-    fontSize: 10,
-    color: colors.muted,
-    fontFamily: fonts.regular,
-  },
-  card: {
-    padding: 15,
-    gap: 6,
-    marginBottom: 12,
-  },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
+  stamp: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    borderWidth: 2,
     alignItems: "center",
-    gap: 10,
+    justifyContent: "center",
   },
-  title: {
-    fontSize: 13,
-    fontWeight: "700",
+  stampSmall: {
+    fontSize: 9,
+    letterSpacing: 1,
+    fontFamily: fonts.bold,
+  },
+  stampBig: {
+    fontSize: 14,
+    fontFamily: fonts.black,
+  },
+  shopText: {
+    flex: 1,
+    gap: 3,
+  },
+  shopName: {
+    fontSize: 17,
     fontFamily: fonts.bold,
     color: colors.text,
-    flex: 1,
   },
   meta: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
-  itemRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingTop: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-  },
-  itemText: {
-    flex: 1,
-    gap: 2,
-  },
-  itemName: {
-    fontSize: 12,
-    fontWeight: "600",
+  stock: {
+    fontSize: 13,
+    color: colors.primary,
     fontFamily: fonts.semibold,
-    color: colors.text,
-  },
-  qty: {
-    width: 70,
   },
 });

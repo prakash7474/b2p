@@ -61,7 +61,7 @@ export default function LoginScreen() {
 
         <Button
           label="Login"
-          icon={<MaterialCommunityIcons name="login" size={14} color="#fff" />}
+          icon={<MaterialCommunityIcons name="login" size={18} color={colors.primary} />}
           onPress={submit}
           loading={loading}
           full
@@ -102,7 +102,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   footerText: {
-    fontSize: 11,
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },

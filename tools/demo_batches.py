@@ -58,15 +58,10 @@ def add(apply):
                   f"({'fridge' if fridge else 'no fridge'})")
             if apply:
                 main.COLS["batches"].insert_one(batch)
-                # Assignment adds the batch's kg to the shop's inventory row.
-                main._adjust_inventory(vendor_id, batch, batch["remaining_volume_kg"])
 
 
 def remove():
     for batch in main.COLS["batches"].find({"demo": True, "batch_id": {"$regex": "^DEMO-"}}):
-        # Take back whatever kg is still counted in inventory (expired kg was already removed).
-        if batch.get("status") in main.HELD_STATUSES and not batch.get("expired_at"):
-            main._adjust_inventory(batch["vendor_id"], batch, -main._batch_remaining(batch))
         main.COLS["batches"].delete_one({"_id": batch["_id"]})
         print(f"removed {batch['batch_id']}")
 

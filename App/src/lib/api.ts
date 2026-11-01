@@ -8,6 +8,14 @@ export function parseServerDate(value: unknown): Date {
   return new Date(/T[\d:.]+$/.test(text) ? `${text}Z` : text);
 }
 
+/** "made 28 Oct, 5:10 AM": how a shop tells its batches apart (no batch codes on screen). */
+export function madeLabel(value: unknown): string {
+  if (!value) return "";
+  const date = parseServerDate(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `made ${date.toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" })}`;
+}
+
 export type VendorProfile = StringMap & {
   _id?: string;
   vendor_id?: string | null;
@@ -50,7 +58,29 @@ export type NearbyVendor = StringMap & {
     longitude?: number | null;
     address?: string;
   };
-  available_inventory?: StringMap[];
+  available_inventory?: StockItem[];
+};
+
+/** One product a nearby shop has free to order (held pickup kg already taken off). */
+export type StockItem = StringMap & {
+  product_id?: string;
+  product_name?: string;
+  quantity?: number;
+  price?: number | null;
+  made_at?: string | null;
+};
+
+export type PickupOrder = StringMap & {
+  order_id: string;
+  vendor_id: string;
+  shop_name?: string;
+  customer_name?: string | null;
+  items: { product_name: string; quantity_kg: number; price_per_kg?: number | null; line_total?: number | null }[];
+  total: number;
+  status: "to_collect" | "collecting" | "collected" | "expired" | "cancelled";
+  pickup_code: string;
+  created_at: string;
+  hold_until: string;
 };
 
 export type CustomerLocation = {
@@ -84,7 +114,6 @@ export type ForecastItem = {
   history_source?: "sales" | "snapshot" | "baseline";
   /** kg in this shop's pending batch requests. */
   requested_kg?: number;
-  batches?: BatchChip[];
   /** Available batches that would cover the refill, freshest first. */
   suggested_batches?: BatchChip[];
   suggested_kg?: number;
@@ -111,6 +140,7 @@ export type VendorBatch = StringMap & {
   threshold_kg?: number;
   low_stock?: boolean;
   received_at?: string | null;
+  manufactured_at?: string | null;
   expires_at?: string | null;
   risk_score?: number;
   risk_label?: "Low" | "Medium" | "High";
@@ -118,6 +148,12 @@ export type VendorBatch = StringMap & {
   action?: string;
   hours_to_expiry?: number;
   expired?: boolean;
+};
+
+export type ShopAlert = {
+  kind: "expired" | "expiring" | "low" | "below_forecast" | "awaiting";
+  level: "danger" | "warning" | "info";
+  text: string;
 };
 
 export type AvailableBatch = StringMap & {
@@ -329,6 +365,12 @@ export const api = {
     return { forecast: data?.forecast ?? [], summary: data?.summary, window: data?.window, message: data?.message };
   },
 
+  /** The shop's stock alerts, problems first (same rules as the admin's Inventory page). */
+  async getAlerts(vendorKey: string): Promise<ShopAlert[]> {
+    const data = await request<{ alerts?: ShopAlert[] }>(`/vendors/${encodeURIComponent(vendorKey)}/alerts`);
+    return data.alerts ?? [];
+  },
+
   async getRisk(vendorKey: string): Promise<RiskReport> {
     const data = await request<{
       evaluations?: VendorBatch[];
@@ -389,12 +431,42 @@ export const api = {
     );
   },
 
-  /** Customer purchase: the backend sells from the vendor's first-expiring fresh batches. */
-  buy(vendorKey: string, productName: string, quantityKg: number) {
-    return request<{ message?: string; order?: StringMap }>("/orders", {
+  /** Customer: order from one shop to collect and pay there; the kg is held for a while. */
+  async placeOrder(vendorKey: string, items: { product_name: string; quantity_kg: number }[]) {
+    const data = await request<{ order: PickupOrder }>("/customer-orders", {
       method: "POST",
-      body: { vendor_id: vendorKey, product_name: productName, quantity_kg: quantityKg },
+      body: { vendor_id: vendorKey, items },
     });
+    return data.order;
+  },
+
+  cancelMyOrder(orderId: string) {
+    return request<{ message?: string }>(`/customer-orders/${encodeURIComponent(orderId)}/cancel`, { method: "POST" });
+  },
+
+  async getMyOrders() {
+    const data = await request<{ orders?: PickupOrder[] }>("/customer-orders");
+    return data.orders ?? [];
+  },
+
+  /** Shop: customer orders waiting to be collected, oldest first. */
+  async getPickups(vendorKey: string) {
+    const data = await request<{ orders?: PickupOrder[] }>(`/vendors/${encodeURIComponent(vendorKey)}/pickups`);
+    return data.orders ?? [];
+  },
+
+  cancelPickup(vendorKey: string, orderId: string, reason = "") {
+    return request<{ message?: string }>(
+      `/vendors/${encodeURIComponent(vendorKey)}/pickups/${encodeURIComponent(orderId)}/cancel`,
+      { method: "POST", body: { reason } },
+    );
+  },
+
+  collectPickup(vendorKey: string, orderId: string, code: string) {
+    return request<{ message?: string }>(
+      `/vendors/${encodeURIComponent(vendorKey)}/pickups/${encodeURIComponent(orderId)}/collect`,
+      { method: "POST", body: { code } },
+    );
   },
 
   async getLogs() {

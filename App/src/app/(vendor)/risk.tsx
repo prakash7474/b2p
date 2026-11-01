@@ -5,10 +5,10 @@ import { StyleSheet, Text, View } from "react-native";
 import { Card, EmptyState, SectionTitle, StatCard, StatGrid } from "@/src/components/cards";
 import { SecondaryButton } from "@/src/components/controls";
 import { LoadingScreen, Screen } from "@/src/components/layout";
-import { AlertBox, BarMeter, StatusPill } from "@/src/components/status";
-import { api, type RiskReport } from "@/src/lib/api";
+import { AlertBox, BarMeter, RiskBadge } from "@/src/components/status";
+import { api, madeLabel, type RiskReport } from "@/src/lib/api";
 import { messageOf, useAuth } from "@/src/lib/auth";
-import { colors, fonts, radius, riskColor } from "@/src/theme";
+import { colors, fonts, riskColor } from "@/src/theme";
 
 export default function RiskScreen() {
   const { vendorId } = useAuth();
@@ -80,15 +80,16 @@ export default function RiskScreen() {
         </Card>
       ) : (
         <>
-          <Card style={[styles.aggregate, { borderColor: riskColor(report?.aggregateLabel) }]}>
-            <Text style={styles.aggregateLabel}>Shop Aggregate Risk</Text>
-            <Text style={[styles.aggregateValue, { color: riskColor(report?.aggregateLabel) }]}>
-              {aggregate == null ? "—" : `${aggregate.toFixed(1)}%`}
-            </Text>
-            <Text style={[styles.aggregateBand, { color: riskColor(report?.aggregateLabel) }]}>
-              {report?.aggregateLabel ?? "—"} risk · weighted by kg in each batch
-            </Text>
+          <Card style={styles.aggregate}>
+            <Text style={styles.aggregateLabel}>Shop risk</Text>
+            <View style={styles.aggregateRow}>
+              <Text style={[styles.aggregateValue, { color: riskColor(report?.aggregateLabel) }]}>
+                {aggregate == null ? "—" : `${aggregate.toFixed(1)}%`}
+              </Text>
+              {report?.aggregateLabel ? <RiskBadge label={report.aggregateLabel} /> : null}
+            </View>
             <BarMeter percent={aggregate ?? 0} color={riskColor(report?.aggregateLabel)} />
+            <Text style={styles.aggregateNote}>Weighted by the kg left in each batch</Text>
           </Card>
 
           <StatGrid>
@@ -139,11 +140,11 @@ export default function RiskScreen() {
                     <View style={styles.batchHeader}>
                       <View style={styles.batchHeaderText}>
                         <Text style={styles.batchProduct}>{String(item.product_name ?? "Product")}</Text>
-                        <Text style={styles.batchId}>
-                          Batch {String(item.batch_id ?? "unknown")} · {Number(item.remaining_kg ?? 0)} kg
+                        <Text style={styles.batchMeta}>
+                          {[`${Number(item.remaining_kg ?? 0)} kg`, madeLabel(item.manufactured_at)].filter(Boolean).join(" · ")}
                         </Text>
                       </View>
-                      <StatusPill status={label === "Low" ? "active" : label.toLowerCase()} label={`${label} Risk`} />
+                      <RiskBadge label={item.expired ? "Expired" : label} />
                     </View>
                     <BarMeter
                       label="Risk score"
@@ -151,7 +152,6 @@ export default function RiskScreen() {
                       percent={score}
                       color={riskColor(label)}
                     />
-                    <Text style={[styles.action, { color: riskColor(label) }]}>{String(item.action ?? "")}</Text>
                   </View>
                 );
               })}
@@ -166,30 +166,35 @@ export default function RiskScreen() {
 const styles = StyleSheet.create({
   aggregate: {
     padding: 16,
-    borderWidth: 2,
-    gap: 4,
+    gap: 10,
   },
   aggregateLabel: {
-    fontSize: 11,
+    fontSize: 12,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+    color: colors.primary,
+    fontFamily: fonts.medium,
+  },
+  aggregateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  aggregateValue: {
+    fontSize: 40,
+    fontFamily: fonts.black,
+  },
+  aggregateNote: {
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
   },
-  aggregateValue: {
-    fontSize: 32,
-    fontWeight: "700",
-    fontFamily: fonts.bold,
-  },
-  aggregateBand: {
-    fontSize: 11,
-    fontWeight: "600",
-    fontFamily: fonts.semibold,
-    marginBottom: 6,
-  },
   batchRow: {
-    padding: 15,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-    gap: 6,
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+    gap: 10,
   },
   batchRowLast: {
     borderBottomWidth: 0,
@@ -205,19 +210,13 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   batchProduct: {
-    fontSize: 12,
-    fontWeight: "700",
+    fontSize: 17,
     fontFamily: fonts.bold,
     color: colors.text,
   },
-  batchId: {
-    fontSize: 10,
+  batchMeta: {
+    fontSize: 13,
     color: colors.muted,
     fontFamily: fonts.regular,
-  },
-  action: {
-    fontSize: 10,
-    fontFamily: fonts.medium,
-    borderRadius: radius.control,
   },
 });
