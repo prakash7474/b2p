@@ -1,0 +1,75 @@
+{
+  "model": {
+    "Accuracy": 0.9862,
+    "Balanced_Accuracy": 0.9742,
+    "Macro_F1": 0.9713
+  },
+  "baseline": {
+    "Accuracy": 0.81,
+    "Macro_F1": 0.2983
+  },
+  "per_class": {
+    "High": {
+      "precision": 0.9938176197836167,
+      "recall": 0.9922839506172839,
+      "f1-score": 0.993050193050193,
+      "support": 648.0
+    },
+    "Low": {
+      "precision": 0.9705882352941176,
+      "recall": 1.0,
+      "f1-score": 0.9850746268656716,
+      "support": 66.0
+    },
+    "Medium": {
+      "precision": 0.9411764705882353,
+      "recall": 0.9302325581395349,
+      "f1-score": 0.935672514619883,
+      "support": 86.0
+    },
+    "accuracy": 0.98625,
+    "macro avg": {
+      "precision": 0.9685274418886566,
+      "recall": 0.9741721695856063,
+      "f1-score": 0.9712657781785826,
+      "support": 800.0
+    },
+    "weighted avg": {
+      "precision": 0.9862422720247295,
+      "recall": 0.98625,
+      "f1-score": 0.9862241084087118,
+      "support": 800.0
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "High",
+      "Low",
+      "Medium"
+    ],
+    "rows": [
+      [
+        643,
+        0,
+        5
+      ],
+      [
+        0,
+        66,
+        0
+      ],
+      [
+        4,
+        2,
+        80
+      ]
+    ]
+  },
+  "model_params": {
+    "n_estimators": 200,
+    "max_depth": 10,
+    "min_samples_leaf": 1,
+    "max_features": "sqrt",
+    "class_weight": "balanced"
+  }
+}

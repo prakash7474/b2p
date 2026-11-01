@@ -1,5 +1,6 @@
-# Pinned to the versions the saved models were trained and tested with; the .pkl
-# files may not load (or may predict differently) under other scikit-learn / xgboost releases.
+# Pinned so every machine runs the same code; the .pkl files may not load (or may predict
+# differently) under other scikit-learn / xgboost releases. The spoilage model was saved with
+# scikit-learn 1.6.1 (Colab) and should be retrained under 1.9.1 to match this pin.
 pymongo==4.19.0
 python-dotenv==1.2.4
 fastapi==0.162.0
